@@ -1,0 +1,153 @@
+Event Horizon Community verbose server rules
+
+This channel contains a set of rules you are obligated to read, understand and follow to participate in the server. Know these rules well as you may very well be brought up against them.
+The simplified ruleset exists so users can get a basic understanding of the rules. It is a good idea to be familiar with this ruleset as it is the one moderators will be using.
+Certain channels also contain pinned rules which will be enforced.
+
+TYPES OF PUNISHMENT
+This section details different punishments that we can give out depending on how badly a user breaks the rules. The punishment used is to the discretion of the moderator.
+
+The Strike System
+
+We use strikes to restrict users. In previous iterations of the rules, strikes were permanent. This is no longer the case.
+You may be awarded strikes depending on how serious your infraction was.
+
+Strike 1 - Verbal warning. You will be brought to terms with what you have done wrong, usually in the same channel, but sometimes in a quarantine channel.
+Strike 2 - Channel restriction. You will be restricted to #⁠cooldown-room for seven days, but you may see all other channels a user with no roles would otherwise be able to see - just not talk in them. After this period you are given back all your roles.
+Strike 3 - Quarantine. You will be quarantined and given 24 hours to appeal. In this appeal you should talk about why you did whatever wound you up here and try to explain yourself. Failure to comply on strike 3 will simply result in a ban.
+Regardless, members who have reached strike 3 will spend 2 weeks in quarantine, which can be lessened depending on how the user acts in the channel.
+Strike 4 - Ban. Bans are usually permanent, unless a banned user reaches out to me to appeal. Users are also instantly banned if they leave with a punishment role, which is covered in the next section.
+
+Strike 1 also expires after 6 months, however the offense is not forgotten. This means if you pick up a strike and wait 6 months that strike will disappear, but as soon as you get more than 1 strike this will no longer apply to you.
+
+You are liable to be striked much heavier if you are a new user (roleless), have been unbanned, or if you are repeating something that got you punished before.
+
+Punishment Roles
+
+Certain roles are known colliqually as "punishment roles", which lack permissions of other roles. Any attempts to evade or remove these roles will be met with an immediate ban. This is known as bypassing. Examples of bypassing would be but not limited to the following:
+- Using alts that are unrestricted
+- Getting other users to send messages on your behalf or find things out
+- Leaving the server with a punishment role (rejoin or not)
+
+The punishment roles are the following:
+
+@Unfunny, @Outcast - Unfunny will restrict image sending permissions in meme channels, while Outcast will stop users from accessing #⁠server-feedback. They are given for awful memes and ridiculous suggestions, respectively.
+
+@Quarantine, @Solitude, @Isolation, @Desolation, @Cryo-Freeze - all of these roles are identical in terms of permissions but restrict a user to a different channel (Quarantine restricts to #⁠quarantine, etc).
+
+@Exile - heavily restrictive roles that restrict a user to one channel only.
+
+@PURGE - a user with PURGE will see no channels. This role will eventually be removed from people who earn it, so leaving with this role is a pointless as will simply lead to a permanent ban.
+
+
+Note that if you are restricted by @Quarantine, @Solitude, @Desolation, @Isolation, @Exile or @Cryo-Freeze and you refuse to comply with moderators or do not respond to us in seven days, we reserve the right to ban you for wasting our time.
+
+SERVER RULES
+
+The verbose version of the rules expands on the simplified rules, for further clarification.
+How each rule is enforced is to the discretion of the moderator.
+All users are expected to abide by the Discord guidelines and Terms of Service. These can be read here: https://discord.com/new/guidelines https://discord.com/new/terms
+
+
+ARTICLE I - Pinging
+
+This section details restrictions we might give out for abuse of the ping function in Discord. This entire section is the verbose version of simplified rule 1.
+
+a) Mass pinging
+
+Mass pinging is any sort of ping that targets a large group of users. Examples would be pinging @everyone/@here (although this is reserved for the highest ranking staff), or more commonly, using client modifications to mention dozens of people individually in a message.
+The latter will be immediately met with a ban. Admins abusing this permission is incredibly uncommon and will be dealt with on a per-case basis.
+
+
+b) Needless pinging
+Needless pinging is pinging people for no good reason, usually to annoy them.
+
+
+c) Role mentions
+Some roles can be mentioned. This exists for the benefit of users (e.g. to alert moderators), and should not be abused.
+
+ARTICLE II - Content
+
+a) Spam
+
+The word "spam" is very broad, but generally we might call any of the following spam:
+Abusing a bot to post lots of messages
+Excessively long, nonsensical messages
+Sending lots of messages very quickly
+...etc
+
+Spam is perfectly fine in #⁠cooldown-room and #⁠botspam. This rule is enforced in all other channels.
+
+
+b) Inappropriate content and attacks
+
+This is the verbose rule of simplified rule 12. We generally try to keep the server PG. Discord requires its users to be at least 13 years old, so the content in the server should reflect this rule.
+This means we do not permit NSFW content anywhere in the server. Inappropriate content is determined at the discretion of the moderator team.
+We also do not permit any kind of attacks on users. This includes insults, flame wars, racism to users and groups, or constant arrogance aimed at a particular user.
+We base our content rules on the ones detailed in the Discord guidelines: https://discord.com/guidelines.
+
+
+c) Advertising
+
+Advertising is defined as posting links to other servers, YouTube or Twitch channels, and so forth with the intention of personal gain.
+We are not a recruitment ground for your own server, or a fanbase for your channel. If you want people to join your server, you can send the invite in DM.
+If you want to share a video you made on your YouTube channel for example, we would say this is fine - but pushing your channel in peoples' faces is crossing the line.
+Additionally, you can apply for the @Content Creator role and gain permissions to post your channel in #⁠community-announcements. There is more info on this role in #⁠faq.
+
+
+d) Fake content
+
+Parodies and such of games including Event Horizon should be marked clearly as fake content so people are not misled.
+
+e) Database mods
+
+Database mods are mods for Event Horizon which expand upon the base content, or straight up remove it.
+
+Mod makers can request for special rules to be enforced to protect their mod (such as anti-cheat rules). These will be enforced by the staff team. If you would like to enforce certain rules for your mod you can contact staff to arrange this.
+
+
+f) Cheating
+
+The Discord guidelines and TOS (https://discord.com/guidelines, https://discord.com/terms) clearly state exploits, cheating and decompiling source codes of games is not at all allowed. Cheating should not be discussed in the Event Horizon server, and any content showing others how to cheat or exploit the game will be immediately deleted, and the offending user punished accordingly.
+
+g) Inappropriate Profiles
+You are expected to keep your profile PG at all times. This means keeping your profile picture and name free from anything NSFW. Either your username or your nickname should be pingable with a standard US/UK English keyboard - you do not have to do both.
+
+
+h) DM/extra-server content
+
+Generally the server has no business with what goes on in members' DMs, with certain exceptions. These exceptions include spreading cheats, and sharing invites to servers to lots of members at once who are not interested.
+
+i) Server Conduct
+You should conduct yourself around the server in a way that is respectful of others. Treat others the way you would like to be treated, and be patient with newer members. They may not share the same knowledge as you, so be patient and expect to explain things. Hostility towards other members of the community based on this, especially against newer members, will lead to disciplinary action. If you are directly responsible for another member leaving, further action will be taken.
+
+j) Language
+As we are an English-speaking server, we expect everyone who uses it to also use English. However, our moderators do also talk a variety of languages so using other languages is permitted in the channels of #⁠international and #⁠cooldown-room. Images containing other languages should be provided with a translation, where appropriate.
+
+This also means that your English should be clear and concise. Avoid using distorted words or language that might be difficult for non-native English speakers to understand, and avoid language that cannot be understood by English speakers as well. You should also avoid excessively using special characters that reduce a message's readability, or clutter space. #⁠cooldown-room is exempt.
+
+ARTICLE III - Server-specific rules
+
+a) Server jokes and memes
+
+Sometimes me and the mod team like to mess around with users, roles and channels. Users who cannot take a joke may be told off.
+
+
+b) Discussion of internal matters
+
+This rule refers to things like discussing punishment and what the staff team have been doing. All you are asked is that you do not bastardise what happened (e.g. if you are punished, making things up that happened when they in fact did not).
+
+
+c) Loopholes
+
+If you find a loophole in the server rules, it is your duty to report this to myself or a senior staff so that it can immediately be rectified. Exploiting loopholes is heavily punishable.
+
+
+d) Compliance with staff
+
+The server staff voluntarily give up their time to keep things here pleasant. Refusal to comply with staff will almost certainly worsen your situation.
+
+
+e) Baiting
+
+"Baiting" is the act of making someone else look responsible for a rule you have broken, or doing things to people to get them to break a rule, or otherwise.

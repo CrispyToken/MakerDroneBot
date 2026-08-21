@@ -1,0 +1,22 @@
+# Discord Bot Core
+discord.py>=2.4.0
+python-dotenv>=1.0.1
+aiohttp>=3.9.0
+
+# Async SQLite
+aiosqlite>=0.20.0
+
+# Image Processing
+pillow>=10.0.0
+
+# Document Extraction
+pypdf>=4.0.0
+python-docx>=1.0.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+ebooklib>=0.18
+
+# RAG / Embeddings
+fastembed>=0.3.0
+pydantic-ai>=0.1.0
+cognee==1.5.0

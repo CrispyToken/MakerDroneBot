@@ -1,0 +1,16 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+data/*
+!data/.gitkeep
+ingest/*
+!ingest/.gitkeep
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+searxng-docker/searxng/settings.yml
