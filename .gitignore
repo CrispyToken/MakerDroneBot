@@ -9,6 +9,8 @@ data/*
 !data/.gitkeep
 ingest/*
 !ingest/.gitkeep
+prompt/*
+!prompt/.gitkeep
 .idea/
 .DS_Store
 Thumbs.db

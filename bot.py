@@ -31,9 +31,6 @@ async def on_ready():
             except Exception as e:
                 log.exception(f"Failed to load cog {filename}: {e}")
 
-    # Warm up Cognee in the background before accepting traffic.
-    # This triggers the embedding model download and vector engine
-    # initialization on the background thread, not the Discord loop.
     asyncio.create_task(warmup_cognee())
 
     if not monitoring_cycle.is_running():
@@ -71,7 +68,7 @@ async def on_message(message: discord.Message):
             is_reply_to_bot = True
 
     if message.guild is None:
-        await answer_question(bot, message, message.content, "fast")
+        await answer_question(bot, message, message.content)
         return
 
     if not (is_mention or is_reply_to_bot): return
@@ -84,7 +81,7 @@ async def on_message(message: discord.Message):
         await message.reply("How can I help you?")
         return
 
-    await answer_question(bot, message, question, "fast")
+    await answer_question(bot, message, question)
 
 @bot.event
 async def on_command_error(ctx: commands.Context, error: Exception):

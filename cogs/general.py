@@ -1,8 +1,7 @@
 import discord
 from discord.ext import commands
 import aiohttp
-from config import COMMAND_PREFIX, LMSTUDIO_BASE_URL, FAST_MODEL_ID, DEEP_MODEL_ID, DISCORD_CHAR_LIMIT
-from core.llm import get_loaded_model, get_auth_headers
+from config import COMMAND_PREFIX, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, DISCORD_CHAR_LIMIT
 
 
 class GeneralCog(commands.Cog):
@@ -44,32 +43,29 @@ class GeneralCog(commands.Cog):
     async def ping(self, ctx: commands.Context):
         await ctx.reply(f"Pong. Gateway latency: {round(self.bot.latency * 1000)} ms")
 
-    @commands.command(name="status", help="Shows LM Studio and Cognee status.")
+    @commands.command(name="status", help="Shows LLM backend and Cognee status.")
     async def status_cmd(self, ctx: commands.Context):
-        lm_ok = True;
-        lm_error = None
-        currently_loaded = await get_loaded_model()
+        llm_ok = True;
+        llm_error = None
         try:
             timeout = aiohttp.ClientTimeout(total=10)
-            headers = get_auth_headers()
+            headers = {"Authorization": f"Bearer {LLM_API_KEY}"} if LLM_API_KEY else {}
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(f"{LMSTUDIO_BASE_URL}/models", headers=headers) as response:
-                    lm_ok = response.status == 200
-                    if not lm_ok: lm_error = await response.text()
+                async with session.get(f"{LLM_BASE_URL}/models", headers=headers) as response:
+                    llm_ok = response.status == 200
+                    if not llm_ok: llm_error = await response.text()
         except Exception as e:
-            lm_ok = False;
-            lm_error = str(e)
+            llm_ok = False;
+            llm_error = str(e)
 
         status = (
-            f"LM Studio URL: `{LMSTUDIO_BASE_URL}`\n"
-            f"LM Studio reachable: `{'yes' if lm_ok else 'no'}`\n"
-            f"Fast model ID: `{FAST_MODEL_ID}`\n"
-            f"Deep model ID: `{DEEP_MODEL_ID}`\n"
-            f"Currently loaded: `{currently_loaded or 'None'}`\n"
+            f"LLM Base URL: `{LLM_BASE_URL}`\n"
+            f"LLM reachable: `{'yes' if llm_ok else 'no'}`\n"
+            f"Model ID: `{LLM_MODEL_ID}`\n"
             f"Discord char limit: `{DISCORD_CHAR_LIMIT}`\n"
             f"Cognee Datasets: `event_horizon`, `event_horizon_dynamic`"
         )
-        if not lm_ok and lm_error: status += f"\n`{lm_error[:300]}`"
+        if not llm_ok and llm_error: status += f"\n`{llm_error[:300]}`"
         await ctx.reply(status)
 
 

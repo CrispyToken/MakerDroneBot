@@ -16,29 +16,25 @@ COGNEE_CHUNK_OVERLAP = int(os.getenv("COGNEE_CHUNK_OVERLAP", "150"))
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8080").rstrip("/")
 
 # System Prompts
-SYSTEM_PROMPT_FILE = Path(os.getenv("SYSTEM_PROMPT_FILE", "system_prompt.txt")).resolve()
-MONITOR_PROMPT_FILE = Path(os.getenv("MONITOR_PROMPT_FILE", "monitoring_prompt.txt")).resolve()
-SERVER_RULES_FILE = Path(os.getenv("SERVER_RULES_FILE", "server_rules.txt")).resolve()
+SYSTEM_PROMPT_FILE = Path(os.getenv("SYSTEM_PROMPT_FILE", "prompt/system_prompt.txt")).resolve()
+MONITOR_PROMPT_FILE = Path(os.getenv("MONITOR_PROMPT_FILE", "prompt/monitoring_prompt.txt")).resolve()
+SERVER_RULES_FILE = Path(os.getenv("SERVER_RULES_FILE", "prompt/server_rules.txt")).resolve()
 
-# LM Studio
-LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234").rstrip("/")
-if not LMSTUDIO_BASE_URL.endswith("/v1"):
-    LMSTUDIO_BASE_URL += "/v1"
-LMSTUDIO_API_KEY = os.getenv("LMSTUDIO_API_KEY", "").strip()
-LMSTUDIO_CHAT_MODEL = os.getenv("LMSTUDIO_CHAT_MODEL", "local-model")
+# LLM / Inference Backend
+# We read LLM_ENDPOINT and LLM_MODEL (which Cognee/LiteLLM require).
+LLM_BASE_URL = os.getenv("LLM_ENDPOINT", "http://127.0.0.1:1234/v1").rstrip("/")
+if not LLM_BASE_URL.endswith("/v1"):
+    LLM_BASE_URL += "/v1"
+LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
+
+# LiteLLM (Cognee) requires the "openai/" prefix in LLM_MODEL.
+# PydanticAI (the bot) just wants the raw model ID. We strip it here.
+raw_model = os.getenv("LLM_MODEL", "local-model").strip()
+LLM_MODEL_ID = raw_model.split("/", 1)[-1] if "/" in raw_model else raw_model
 
 # Monitoring
 MONITOR_INTERVAL_MINUTES = int(os.getenv("MONITOR_INTERVAL_MINUTES", "180"))
 MONITOR_MAX_MESSAGES_PER_CHANNEL = int(os.getenv("MONITOR_MAX_MESSAGES_PER_CHANNEL", "50"))
-
-# Models
-FAST_MODEL_ID = os.getenv("FAST_MODEL_ID", LMSTUDIO_CHAT_MODEL).strip()
-DEEP_MODEL_ID = os.getenv("DEEP_MODEL_ID", FAST_MODEL_ID).strip()
-MODEL_SWITCH_MODE = os.getenv("MODEL_SWITCH_MODE", "command").lower()
-FAST_MODEL_LOAD_COMMAND = os.getenv("FAST_MODEL_LOAD_COMMAND", "").strip()
-DEEP_MODEL_LOAD_COMMAND = os.getenv("DEEP_MODEL_LOAD_COMMAND", "").strip()
-MODEL_SWITCH_TIMEOUT = int(os.getenv("MODEL_SWITCH_TIMEOUT", "180"))
-MODEL_SWITCH_SETTLE_SECONDS = float(os.getenv("MODEL_SWITCH_SETTLE_SECONDS", "3"))
 
 # Images
 MAX_IMAGE_ATTACHMENTS = int(os.getenv("MAX_IMAGE_ATTACHMENTS", "3"))

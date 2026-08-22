@@ -7,11 +7,10 @@ import aiosqlite
 import cognee
 from config import (
     MONITOR_PROMPT_FILE, SERVER_RULES_FILE, MONITOR_INTERVAL_MINUTES,
-    MONITOR_MAX_MESSAGES_PER_CHANNEL, LMSTUDIO_BASE_URL, REQUEST_TIMEOUT, DB_PATH
+    MONITOR_MAX_MESSAGES_PER_CHANNEL, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, REQUEST_TIMEOUT, DB_PATH
 )
 from core.db import get_monitored_channels, get_config
 from core.memory import cognee_in_background, release_cognee_lock
-from core.llm import ensure_model, get_auth_headers, MODEL_LOCK
 
 log = logging.getLogger("rag-bot")
 monitoring_in_progress = False
@@ -57,13 +56,10 @@ async def run_monitoring_evaluation(bot: discord.Client, channel_texts: list[str
     batched_context = "\n\n".join(channel_texts)
     full_prompt = f"{monitoring_prompt}\n\n=== MONITORED CHANNEL MESSAGES ===\n{batched_context}\n=== END MESSAGES ==="
 
-    async with MODEL_LOCK:
-        model_id = await ensure_model("fast")
-
-    url = f"{LMSTUDIO_BASE_URL}/chat/completions"
-    headers = get_auth_headers()
+    url = f"{LLM_BASE_URL}/chat/completions"
+    headers = {"Authorization": f"Bearer {LLM_API_KEY}"} if LLM_API_KEY else {}
     payload = {
-        "model": model_id,
+        "model": LLM_MODEL_ID,
         "messages": [{"role": "user", "content": full_prompt}],
         "temperature": 0.1,
         "stream": False,

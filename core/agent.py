@@ -4,16 +4,17 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 import cognee
 import logging
-from config import LMSTUDIO_BASE_URL, LMSTUDIO_API_KEY, SYSTEM_PROMPT_FILE
+from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, SYSTEM_PROMPT_FILE
 from core.memory import cognee_in_background, cognee_recall, release_cognee_lock
 from services.web_search import execute_web_search
 
 log = logging.getLogger("rag-bot")
 
-lm_studio_provider = OpenAIProvider(
-    base_url=LMSTUDIO_BASE_URL,
-    api_key=LMSTUDIO_API_KEY or "lm-studio"
+llm_provider = OpenAIProvider(
+    base_url=LLM_BASE_URL,
+    api_key=LLM_API_KEY or "no-key"
 )
+
 
 @dataclass
 class BotDependencies:
@@ -22,6 +23,7 @@ class BotDependencies:
     channel_name: str
     channel_topic: str
     server_channels: str
+
 
 def load_system_prompt() -> str:
     try:
@@ -33,6 +35,7 @@ def load_system_prompt() -> str:
     except Exception as e:
         log.exception("Failed to read system prompt file.")
         return "You are a helpful assistant."
+
 
 def build_system_prompt(ctx: RunContext[BotDependencies]) -> str:
     deps = ctx.deps
@@ -69,8 +72,9 @@ def build_system_prompt(ctx: RunContext[BotDependencies]) -> str:
         base_prompt += user_context
     return base_prompt
 
-def get_agent(model_id: str) -> Agent[BotDependencies, str]:
-    model = OpenAIChatModel(model_id, provider=lm_studio_provider)
+
+def get_agent() -> Agent[BotDependencies, str]:
+    model = OpenAIChatModel(LLM_MODEL_ID, provider=llm_provider)
     agent = Agent(
         model=model,
         deps_type=BotDependencies,
@@ -89,8 +93,10 @@ def get_agent(model_id: str) -> Agent[BotDependencies, str]:
             formatted = []
             seen = set()
             for insight in insights:
-                ds_name = getattr(insight, "dataset_name", None) or (insight.get("dataset_name") if isinstance(insight, dict) else None)
-                text = getattr(insight, "text", None) or (insight.get("text", str(insight)) if isinstance(insight, dict) else str(insight))
+                ds_name = getattr(insight, "dataset_name", None) or (
+                    insight.get("dataset_name") if isinstance(insight, dict) else None)
+                text = getattr(insight, "text", None) or (
+                    insight.get("text", str(insight)) if isinstance(insight, dict) else str(insight))
                 if ds_name == "event_horizon_dynamic": continue
                 if text and text not in seen:
                     seen.add(text)
@@ -109,8 +115,10 @@ def get_agent(model_id: str) -> Agent[BotDependencies, str]:
             formatted = []
             seen = set()
             for insight in insights:
-                ds_name = getattr(insight, "dataset_name", None) or (insight.get("dataset_name") if isinstance(insight, dict) else None)
-                text = getattr(insight, "text", None) or (insight.get("text", str(insight)) if isinstance(insight, dict) else str(insight))
+                ds_name = getattr(insight, "dataset_name", None) or (
+                    insight.get("dataset_name") if isinstance(insight, dict) else None)
+                text = getattr(insight, "text", None) or (
+                    insight.get("text", str(insight)) if isinstance(insight, dict) else str(insight))
                 if ds_name != "event_horizon_dynamic": continue
                 if text and text not in seen:
                     seen.add(text)
