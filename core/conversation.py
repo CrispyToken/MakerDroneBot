@@ -8,9 +8,25 @@ from utils.context import build_server_channel_list, get_conversation_context
 from utils.attachments import collect_image_attachments, collect_text_attachments
 from utils.formatting import send_final_answer
 from core.llm_reasoning import chat_reasoning
+import re
+import services.skills as skills_module
 
 log = logging.getLogger("rag-bot")
 
+def detect_explicit_skills(question: str) -> list:
+    manager = skills_module.skill_manager
+    if not manager or not manager.skills:
+        return []
+    q = question.lower()
+    found = []
+    for name, skill in manager.skills.items():
+        patterns = [
+            rf'\b(?:use|using|activate|apply|employ|run)\s+(?:the\s+)?{re.escape(name)}(?:\s+skill)?\b',
+            rf'\bwith\s+(?:the\s+)?{re.escape(name)}\s+skill\b',
+        ]
+        if any(re.search(p, q) for p in patterns):
+            found.append(skill)
+    return found
 
 async def _keep_typing(channel: discord.abc.Messageable, stop_event: asyncio.Event):
     """Send a typing ping every 7 seconds until the stop event is set."""
@@ -37,7 +53,12 @@ async def answer_question(bot: discord.Client, message: discord.Message, questio
             log.info("Attachment warning: %s", warning)
 
         user_question = question.strip()
+        active_skills = detect_explicit_skills(user_question)
+        if active_skills:
+            log.info("Explicit skill activation: %s", ", ".join(s.name for s in active_skills))
+
         question_for_model = user_question
+
         if not question_for_model:
             if images:
                 question_for_model = "Describe the attached image(s) in detail."
@@ -68,6 +89,7 @@ async def answer_question(bot: discord.Client, message: discord.Message, questio
             channel_name=channel_name,
             channel_topic=channel_topic,
             server_channels=server_channels,
+            active_skills=active_skills,
         )
 
         prompt_text = question_for_model

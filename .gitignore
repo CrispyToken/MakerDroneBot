@@ -16,4 +16,6 @@ llama-cpp-python
 .DS_Store
 Thumbs.db
 *.log
+*.json
 codebase_dump.py
+.agents/skills/*

@@ -10,6 +10,9 @@ from core.db import init_db, track_user, get_monitored_channels
 from core.memory import warmup_cognee
 from services.monitoring import monitoring_cycle, emergency_monitoring
 from core.conversation import answer_question
+from config import SKILLS_DIRS
+from services.skills import SkillManager
+import services.skills as skills_module
 
 log = logging.getLogger("rag-bot")
 
@@ -21,6 +24,10 @@ bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=
 async def on_ready():
     await init_db()
     log.info("Logged in as %s", bot.user)
+
+    # Initialize Skill Manager
+    skills_module.skill_manager = SkillManager(SKILLS_DIRS)
+    log.info(f"Loaded {len(skills_module.skill_manager.skills)} Agent Skills.")
 
     cogs_dir = Path(__file__).parent / "cogs"
     for filename in os.listdir(cogs_dir):

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -7,6 +7,7 @@ import logging
 from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, SYSTEM_PROMPT_FILE
 from core.memory import cognee_in_background, cognee_recall, release_cognee_lock
 from services.web_search import execute_web_search
+import services.skills as skills_module
 
 log = logging.getLogger("rag-bot")
 
@@ -23,6 +24,7 @@ class BotDependencies:
     channel_name: str
     channel_topic: str
     server_channels: str
+    active_skills: list = field(default_factory=list)
 
 
 def load_system_prompt() -> str:
@@ -70,6 +72,21 @@ def build_system_prompt(ctx: RunContext[BotDependencies]) -> str:
         if deps.user_profile['staff_notes']:
             user_context += f"Staff Notes regarding this user: {deps.user_profile['staff_notes']}\n"
         base_prompt += user_context
+
+    if skills_module.skill_manager:
+        skills_context = skills_module.skill_manager.get_skills_prompt()
+        if skills_context:
+            base_prompt += f"\n\n{skills_context}"
+
+    if deps.active_skills:
+        for skill in deps.active_skills:
+            base_prompt += (
+                f"\n\n[ACTIVE SKILL: {skill.name}]\n"
+                "This skill was explicitly activated for the current task. Its instructions "
+                "are MANDATORY and take precedence over your defaults. Follow them exactly, "
+                "from the very beginning of your work.\n"
+                f"--- BEGIN SKILL {skill.name} ---\n{skill.content}\n--- END SKILL {skill.name} ---"
+            )
     return base_prompt
 
 
@@ -84,6 +101,26 @@ def get_agent() -> Agent[BotDependencies, str]:
     @agent.system_prompt
     def dynamic_system_prompt(ctx: RunContext[BotDependencies]) -> str:
         return build_system_prompt(ctx)
+
+    @agent.tool
+    async def activate_skill(ctx: RunContext[BotDependencies], skill_name: str) -> str:
+        """
+        Activates a specific Agent Skill. Use this when the user explicitly asks to use a skill,
+        or when a complex task perfectly matches a skill's description.
+        """
+        manager = skills_module.skill_manager
+        if not manager:
+            return "Skill manager not initialized."
+        skill = manager.get_skill(skill_name)
+        if not skill:
+            available = ", ".join(manager.skills.keys()) if manager.skills else "None"
+            return f"Skill '{skill_name}' not found. Available skills: {available}"
+        if skill not in ctx.deps.active_skills:
+            ctx.deps.active_skills.append(skill)
+        return (
+            f"Skill '{skill.name}' is now ACTIVE. The instructions below are MANDATORY "
+            f"for this task — follow them exactly:\n\n{skill.content}"
+        )
 
     @agent.tool
     async def search_game_knowledge(ctx: RunContext[BotDependencies], query: str) -> str:

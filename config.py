@@ -20,6 +20,14 @@ SYSTEM_PROMPT_FILE = Path(os.getenv("SYSTEM_PROMPT_FILE", "prompt/system_prompt.
 MONITOR_PROMPT_FILE = Path(os.getenv("MONITOR_PROMPT_FILE", "prompt/monitoring_prompt.txt")).resolve()
 SERVER_RULES_FILE = Path(os.getenv("SERVER_RULES_FILE", "prompt/server_rules.txt")).resolve()
 
+# Standard directories where 'npx skills' installs SKILL.md files for various agents
+SKILLS_DIRS = [
+    Path(os.getenv("SKILLS_DIR", "skills")).resolve(),
+    Path(".agents/skills").resolve(),
+    Path(".claude/skills").resolve(),
+    Path(".cursor/skills").resolve(),
+]
+
 # LLM / Inference Backend
 # We read LLM_ENDPOINT and LLM_MODEL (which Cognee/LiteLLM require).
 LLM_BASE_URL = os.getenv("LLM_ENDPOINT", "http://127.0.0.1:1234/v1").rstrip("/")
