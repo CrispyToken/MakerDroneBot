@@ -11,8 +11,9 @@ ingest/*
 !ingest/.gitkeep
 prompt/*
 !prompt/.gitkeep
+llama-cpp-python
 .idea/
 .DS_Store
 Thumbs.db
 *.log
-searxng-docker/searxng/settings.yml
+codebase_dump.py

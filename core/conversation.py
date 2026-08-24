@@ -7,6 +7,7 @@ from core.db import get_user_profile
 from utils.context import build_server_channel_list, get_conversation_context
 from utils.attachments import collect_image_attachments, collect_text_attachments
 from utils.formatting import send_final_answer
+from core.llm_reasoning import chat_reasoning
 
 log = logging.getLogger("rag-bot")
 
@@ -92,7 +93,8 @@ async def answer_question(bot: discord.Client, message: discord.Message, questio
             user_content = history_text + prompt_text
 
         agent = get_agent()
-        result = await agent.run(user_content, deps=deps)
+        async with chat_reasoning():
+            result = await agent.run(user_content, deps=deps)
         await send_final_answer(message, result.output)
 
     except RuntimeError as e:

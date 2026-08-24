@@ -2,6 +2,7 @@ import asyncio
 import base64
 import math
 import mimetypes
+import os
 from io import BytesIO
 from pathlib import Path
 from PIL import Image, ImageOps
@@ -15,6 +16,9 @@ from config import (
 from services.extractors import extract_text_from_file
 
 log = logging.getLogger("rag-bot")
+
+# Read the vision flag once at startup
+VISION_ENABLED = os.getenv("ENABLE_VISION", "true").lower() == "true"
 
 def get_image_mime(filename: str) -> str:
     mime, _ = mimetypes.guess_type(filename)
@@ -65,12 +69,27 @@ def process_image_bytes(raw: bytes) -> tuple[bytes, str]:
 
 async def collect_image_attachments(message: discord.Message) -> tuple[list[dict], list[str]]:
     image_blocks, warnings = [], []
-    if not message.attachments: return image_blocks, warnings
+    if not message.attachments:
+        return image_blocks, warnings
+
+    # --- VISION GUARDRAIL ---
+    if not VISION_ENABLED:
+        has_image = any(
+            (att.content_type and att.content_type.startswith("image/")) or
+            Path(att.filename or "").suffix.lower() in ALLOWED_IMAGE_EXTENSIONS
+            for att in message.attachments
+        )
+        if has_image:
+            warnings.append(
+                "Image attachments were ignored because the current model does not support vision (ENABLE_VISION=false).")
+        return image_blocks, warnings
+
     for attachment in message.attachments:
         filename = attachment.filename or "attachment.png"
         ext = Path(filename).suffix.lower()
         content_type = attachment.content_type or ""
-        if not (ext in ALLOWED_IMAGE_EXTENSIONS or content_type.startswith("image/")): continue
+        if not (ext in ALLOWED_IMAGE_EXTENSIONS or content_type.startswith("image/")):
+            continue
         if len(image_blocks) >= MAX_IMAGE_ATTACHMENTS:
             warnings.append("Additional image attachments were ignored.")
             break

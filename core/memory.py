@@ -87,14 +87,19 @@ async def cognee_recall(query: str, datasets: list[str] | None = None) -> list:
 
 
 async def warmup_cognee():
-    """Pre-load the embedding model + vector engine at startup so the first
-    real recall doesn't pay the download/init cost."""
+    """Pre-load the embedding model at startup without requiring existing data."""
     try:
-        log.info("Warming up Cognee (pre-loading embedding model and vector engine)...")
+        log.info("Warming up Cognee (pre-loading embedding model)...")
         await cognee_in_background(cognee.recall, "warmup initialization")
         log.info("Cognee warmup complete.")
     except Exception as e:
-        log.warning("Cognee warmup failed (non-critical): %s", e)
+        error_str = str(e)
+        if "prerequisites not met" in error_str or "RecallPreconditionError" in error_str or "no database" in error_str.lower():
+            # Expected when no data has been ingested yet.
+            # The embedding model still gets loaded during the attempt.
+            log.info("Cognee warmup: embedding model loaded. No knowledge graph data to recall from yet (run !ingest when ready).")
+        else:
+            log.warning("Cognee warmup skipped (non-critical): %s", e)
 
 
 def load_ingest_hashes() -> dict[str, str]:
