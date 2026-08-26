@@ -15,9 +15,14 @@ async def init_db():
         await db.execute("""
             CREATE TABLE IF NOT EXISTS monitored_channels (
                 channel_id INTEGER PRIMARY KEY, channel_name TEXT, reason TEXT,
-                keywords TEXT, last_message_id INTEGER DEFAULT 0
+                keywords TEXT, last_message_id INTEGER DEFAULT 0, active INTEGER DEFAULT 1
             )
         """)
+        # Migration for databases created before the 'active' column existed.
+        try:
+            await db.execute("ALTER TABLE monitored_channels ADD COLUMN active INTEGER DEFAULT 1")
+        except Exception:
+            pass  # Column already exists
         await db.execute("""
             CREATE TABLE IF NOT EXISTS bot_config (key TEXT PRIMARY KEY, value TEXT)
         """)
@@ -72,6 +77,6 @@ async def set_config(key: str, value: str) -> None:
 async def get_monitored_channels() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM monitored_channels") as cursor:
+        async with db.execute("SELECT * FROM monitored_channels WHERE active = 1") as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]

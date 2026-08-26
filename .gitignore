@@ -17,5 +17,7 @@ llama-cpp-python
 Thumbs.db
 *.log
 *.json
+*.txt
+*.gguf
 codebase_dump.py
 .agents/skills/*

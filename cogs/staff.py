@@ -14,6 +14,9 @@ from services.extractors import extract_text_from_file
 from utils.formatting import split_for_discord
 from utils.checks import is_staff
 from core.db import ensure_user_in_db, get_user_profile, get_monitored_channels, get_config, set_config
+from services.monitoring import (
+    set_interval_minutes, schedule_next_from_now, get_interval_minutes, get_next_run_at
+)
 
 log = logging.getLogger("rag-bot")
 
@@ -22,7 +25,9 @@ class StaffCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.command(name="ingest", help="Ingest supported files from the local ingest/ folder into Cognee.")
+    @commands.command(name="ingest",
+                      help="Ingest supported files from the local `ingest/` folder into Cognee.",
+                      usage="ingest")
     @is_staff()
     async def ingest_folder(self, ctx: commands.Context):
         files = []
@@ -128,7 +133,9 @@ class StaffCog(commands.Cog):
         for part in split_for_discord(summary):
             await ctx.reply(part)
 
-    @commands.command(name="improve", help="Run Cognee's improve step to enrich and refine the knowledge graph.")
+    @commands.command(name="improve",
+                      help="Run Cognee's improve step to enrich and refine the knowledge graph.",
+                      usage="improve")
     @is_staff()
     async def improve_graph(self, ctx: commands.Context):
         await ctx.reply(
@@ -143,24 +150,42 @@ class StaffCog(commands.Cog):
         finally:
             await release_cognee_lock()
 
-    @commands.command(name="monitor", help="Manage channel monitoring. Usage: !monitor add/remove/list/setchannel")
+    @commands.command(name="monitor",
+                      help=(
+                              "Manage channel monitoring.\n"
+                              "`!monitor list` — Show monitored channels, alert target, and schedule.\n"
+                              "`!monitor add #channel \"reason\" [keywords]` — Start monitoring a channel.\n"
+                              "`!monitor remove #channel` — Stop monitoring (scan position preserved).\n"
+                              "`!monitor setchannel #channel` — Set where alerts are sent.\n"
+                              "`!monitor setinterval <minutes>` — Set the scan interval (1–1440)."
+                      ),
+                      usage="monitor <add | remove | list | setchannel | setinterval>")
     @is_staff()
     async def monitor_cmd(self, ctx: commands.Context, action: str = "list", *, args: str = ""):
         action = action.lower()
+
         if action == "list":
             monitored = await get_monitored_channels()
+            interval = await get_interval_minutes()
+            next_run = await get_next_run_at()
+            lines = []
             if not monitored:
-                await ctx.reply("No channels are currently being monitored.")
-                return
-            lines = ["**Monitored Channels:**"]
-            for mc in monitored:
-                kw = f" | Keywords: `{mc['keywords']}`" if mc["keywords"] else ""
-                lines.append(f"- <#{mc['channel_id']}> ({mc['channel_name']}): {mc['reason']}{kw}")
+                lines.append("No channels are currently being monitored.")
+            else:
+                lines.append("**Monitored Channels:**")
+                for mc in monitored:
+                    kw = f" | Keywords: `{mc['keywords']}`" if mc["keywords"] else ""
+                    lines.append(f"- <#{mc['channel_id']}> ({mc['channel_name']}): {mc['reason']}{kw}")
             staff_ch = await get_config("staff_channel_id")
             if staff_ch:
                 lines.append(f"\n**Alerts go to:** <#{staff_ch}>")
             else:
                 lines.append("\n**Alerts go to:** Not configured. Use `!monitor setchannel #channel`")
+            if next_run:
+                lines.append(
+                    f"**Schedule:** every {interval}m — next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')}")
+            else:
+                lines.append(f"**Schedule:** every {interval}m — checkpoint not yet created")
             for part in split_for_discord("\n".join(lines)):
                 await ctx.reply(part)
 
@@ -177,30 +202,39 @@ class StaffCog(commands.Cog):
                 except Exception:
                     await ctx.reply("Could not access that channel.")
                     return
-
             reason_match = re.search(r'"([^"]+)"', args)
             if not reason_match:
                 await ctx.reply(
                     "Please provide a reason in quotes. Usage: `!monitor add #channel \"reason\" [keywords]`")
                 return
             reason = reason_match.group(1)
-
             keywords = ""
             after_reason = args[reason_match.end():].strip()
             if after_reason: keywords = after_reason.strip()
 
             async with aiosqlite.connect(DB_PATH) as db:
+                # Detect re-adding a previously removed channel so we can resume scanning.
+                db.row_factory = aiosqlite.Row
+                async with db.execute(
+                        "SELECT last_message_id FROM monitored_channels WHERE channel_id = ?",
+                        (channel_id,),
+                ) as cursor:
+                    existing = await cursor.fetchone()
                 await db.execute("""
-                                 INSERT INTO monitored_channels (channel_id, channel_name, reason, keywords, last_message_id)
-                                 VALUES (?, ?, ?, ?, 0) ON CONFLICT(channel_id) DO
+                                 INSERT INTO monitored_channels (channel_id, channel_name, reason, keywords, last_message_id, active)
+                                 VALUES (?, ?, ?, ?, 0, 1) ON CONFLICT(channel_id) DO
                                  UPDATE SET
                                      channel_name = excluded.channel_name,
                                      reason = excluded.reason,
-                                     keywords = excluded.keywords
+                                     keywords = excluded.keywords,
+                                     active = 1
                                  """, (channel_id, channel.name, reason, keywords))
                 await db.commit()
             kw_msg = f" with keywords `{keywords}`" if keywords else ""
-            await ctx.reply(f"Now monitoring <#{channel_id}> for: {reason}{kw_msg}")
+            if existing and existing["last_message_id"] > 0:
+                await ctx.reply(f"Resuming monitoring of <#{channel_id}> where it left off, for: {reason}{kw_msg}")
+            else:
+                await ctx.reply(f"Now monitoring <#{channel_id}> for: {reason}{kw_msg}")
 
         elif action == "remove":
             channel_match = re.search(r"<#(\d+)>", args)
@@ -209,9 +243,9 @@ class StaffCog(commands.Cog):
                 return
             channel_id = int(channel_match.group(1))
             async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute("DELETE FROM monitored_channels WHERE channel_id = ?", (channel_id,))
+                await db.execute("UPDATE monitored_channels SET active = 0 WHERE channel_id = ?", (channel_id,))
                 await db.commit()
-            await ctx.reply(f"Stopped monitoring <#{channel_id}>.")
+            await ctx.reply(f"Stopped monitoring <#{channel_id}>. Its scan position is preserved for future re-adding.")
 
         elif action == "setchannel":
             channel_match = re.search(r"<#(\d+)>", args)
@@ -222,11 +256,24 @@ class StaffCog(commands.Cog):
             await set_config("staff_channel_id", channel_id)
             await ctx.reply(f"Monitoring alerts will now be sent to <#{channel_id}>.")
 
+        elif action == "setinterval":
+            try:
+                minutes = int(args.strip())
+            except ValueError:
+                await ctx.reply("Usage: `!monitor setinterval <minutes>`")
+                return
+            if not (1 <= minutes <= 1440):
+                await ctx.reply("Interval must be between 1 and 1440 minutes.")
+                return
+            await set_interval_minutes(minutes)
+            await schedule_next_from_now()
+            await ctx.reply(f"Monitoring interval set to **{minutes}** minutes. Next scan checkpoint has been reset.")
+
         else:
             await ctx.reply(
-                "Unknown action. Use: `!monitor add`, `!monitor remove`, `!monitor list`, or `!monitor setchannel`")
+                "Unknown action. Use: `!monitor add`, `!monitor remove`, `!monitor list`, `!monitor setchannel`, or `!monitor setinterval`")
 
-    @commands.command(name="profile", help="View the bot's memory of a user.")
+    @commands.command(name="profile", help="View the bot's memory of a user.", usage="profile [@User]")
     @is_staff()
     async def view_profile(self, ctx: commands.Context, member: discord.Member = None):
         member = member or ctx.author
@@ -243,7 +290,7 @@ class StaffCog(commands.Cog):
         embed.add_field(name="Staff Notes", value=profile['staff_notes'] or "None", inline=False)
         await ctx.reply(embed=embed)
 
-    @commands.command(name="note", help="Add a staff note to a user's profile. Usage: !note @User <text>")
+    @commands.command(name="note", help="Add a staff note to a user's profile.", usage="note @User <text>")
     @is_staff()
     async def add_note(self, ctx: commands.Context, member: discord.Member, *, note: str):
         await ensure_user_in_db(member)
@@ -258,7 +305,7 @@ class StaffCog(commands.Cog):
             await db.commit()
         await ctx.reply(f"Note added to {member.display_name}'s profile.")
 
-    @commands.command(name="clearnotes", help="Clear all staff notes for a user.")
+    @commands.command(name="clearnotes", help="Clear all staff notes for a user.", usage="clearnotes @User")
     @is_staff()
     async def clear_notes(self, ctx: commands.Context, member: discord.Member):
         async with aiosqlite.connect(DB_PATH) as db:

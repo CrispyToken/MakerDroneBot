@@ -8,7 +8,7 @@ from discord.ext import commands
 from config import TOKEN, COMMAND_PREFIX
 from core.db import init_db, track_user, get_monitored_channels
 from core.memory import warmup_cognee
-from services.monitoring import monitoring_cycle, emergency_monitoring
+from services.monitoring import monitoring_scheduler, emergency_monitoring
 from core.conversation import answer_question
 from config import SKILLS_DIRS
 from services.skills import SkillManager
@@ -40,9 +40,9 @@ async def on_ready():
 
     asyncio.create_task(warmup_cognee())
 
-    if not monitoring_cycle.is_running():
-        monitoring_cycle.start(bot)
-        log.info("Monitoring cycle started.")
+    if not monitoring_scheduler.is_running():
+        monitoring_scheduler.start(bot)
+        log.info("Monitoring scheduler started.")
 
 @bot.event
 async def on_message(message: discord.Message):

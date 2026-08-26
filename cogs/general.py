@@ -8,42 +8,72 @@ class GeneralCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.command(name="help", help="Shows all available commands.")
-    async def help_cmd(self, ctx: commands.Context):
+    @commands.command(name="help", help="Shows all available commands, or details for one command.",
+                      usage="help [command]")
+    async def help_cmd(self, ctx: commands.Context, *, command_name: str = ""):
+        command_name = command_name.strip().lower()
+
+        # --- Detail view: !help <command> ---
+        if command_name:
+            command = self.bot.get_command(command_name)
+            if command is None or command.hidden:
+                await ctx.reply(f"Unknown command: `{COMMAND_PREFIX}{command_name}`")
+                return
+            sig = f" {command.signature}" if command.signature else ""
+            syntax = f"{COMMAND_PREFIX}{command.name}{sig}"
+            privilege = "🔒 Staff — Manage Messages required" if command.checks else "👥 Everyone"
+            full_help = (command.help or command.brief or "No description.").strip()
+            embed = discord.Embed(title=f"{COMMAND_PREFIX}{command.name}", color=discord.Color.blue())
+            embed.add_field(name="Syntax", value=f"`{syntax}`", inline=False)
+            embed.add_field(name="Description", value=full_help, inline=False)
+            embed.add_field(name="Access", value=privilege, inline=True)
+            await ctx.reply(embed=embed)
+            return
+
+        # --- Overview view: !help ---
         embed = discord.Embed(
             title="MakerDrone Commands",
-            description=f"All commands use the prefix `{COMMAND_PREFIX}`.",
+            description=f"All commands use the prefix `{COMMAND_PREFIX}`. Run `{COMMAND_PREFIX}help <command>` for full syntax.",
             color=discord.Color.blue(),
         )
+
+        def format_command(command: commands.Command) -> str:
+            sig = f" {command.signature}" if command.signature else ""
+            syntax = f"{COMMAND_PREFIX}{command.name}{sig}"
+            description = (command.help or command.brief or "No description.").strip().split("\n")[0]
+            return f"`{syntax}`\n{description}"
+
         general_lines = []
         staff_lines = []
         for command in sorted(self.bot.commands, key=lambda c: c.name):
-            if command.hidden or command.name == "help": continue
+            if command.hidden or command.name == "help":
+                continue
             try:
                 can_run = await command.can_run(ctx)
             except Exception:
                 can_run = False
-            if not can_run: continue
-
-            desc = (command.help or command.brief or "No description.").strip()
-            desc = desc.split("\n")[0]
-            line = f"`{COMMAND_PREFIX}{command.name}` — {desc}"
+            if not can_run:
+                continue
+            entry = format_command(command)
             if command.checks:
-                staff_lines.append(line)
+                staff_lines.append(entry)
             else:
-                general_lines.append(line)
+                general_lines.append(entry)
 
-        if general_lines: embed.add_field(name="General", value="\n".join(general_lines), inline=False)
-        if staff_lines: embed.add_field(name="Staff Only 🔒", value="\n".join(staff_lines), inline=False)
-        if not general_lines and not staff_lines: embed.add_field(name="Commands", value="No commands available.",
-                                                                  inline=False)
+        if general_lines:
+            embed.add_field(name="👥 General — Everyone", value="\n\n".join(general_lines), inline=False)
+        if staff_lines:
+            embed.add_field(name="🔒 Staff — Manage Messages required", value="\n\n".join(staff_lines), inline=False)
+        if not general_lines and not staff_lines:
+            embed.add_field(name="Commands", value="No commands available.", inline=False)
+
         await ctx.reply(embed=embed)
 
-    @commands.command(name="ping", help="Checks if the bot is alive.")
+    @commands.command(name="ping", help="Checks if the bot is alive.", usage="ping")
     async def ping(self, ctx: commands.Context):
         await ctx.reply(f"Pong. Gateway latency: {round(self.bot.latency * 1000)} ms")
 
-    @commands.command(name="status", help="Shows LLM backend and Cognee status.")
+    @commands.command(name="status", help="Shows LLM backend and Cognee status.", usage="status")
     async def status_cmd(self, ctx: commands.Context):
         llm_ok = True;
         llm_error = None

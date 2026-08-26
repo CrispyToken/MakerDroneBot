@@ -8,7 +8,7 @@ class SkillsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.command(name="skills", help="List all installed Agent Skills.")
+    @commands.command(name="skills", help="List all installed Agent Skills.", usage="skills")
     async def list_skills(self, ctx: commands.Context):
         if not skills_module.skill_manager or not skills_module.skill_manager.skills:
             await ctx.reply(
@@ -26,7 +26,7 @@ class SkillsCog(commands.Cog):
         for part in split_for_discord("\n".join(lines)):
             await ctx.reply(part)
 
-    @commands.command(name="reloadskills", help="Reload SKILL.md files from disk.")
+    @commands.command(name="reloadskills", help="Reload SKILL.md files from disk.", usage="reloadskills")
     @commands.has_permissions(manage_messages=True)
     async def reload_skills(self, ctx: commands.Context):
         if skills_module.skill_manager:
