@@ -21,7 +21,7 @@ class GeneralCog(commands.Cog):
                 return
             sig = f" {command.signature}" if command.signature else ""
             syntax = f"{COMMAND_PREFIX}{command.name}{sig}"
-            privilege = "🔒 Staff — Manage Messages required" if command.checks else "👥 Everyone"
+            privilege = "Staff" if command.checks else "Everyone"
             full_help = (command.help or command.brief or "No description.").strip()
             embed = discord.Embed(title=f"{COMMAND_PREFIX}{command.name}", color=discord.Color.blue())
             embed.add_field(name="Syntax", value=f"`{syntax}`", inline=False)
@@ -61,9 +61,9 @@ class GeneralCog(commands.Cog):
                 general_lines.append(entry)
 
         if general_lines:
-            embed.add_field(name="👥 General — Everyone", value="\n\n".join(general_lines), inline=False)
+            embed.add_field(name="General", value="\n\n".join(general_lines), inline=False)
         if staff_lines:
-            embed.add_field(name="🔒 Staff — Manage Messages required", value="\n\n".join(staff_lines), inline=False)
+            embed.add_field(name="Staff", value="\n\n".join(staff_lines), inline=False)
         if not general_lines and not staff_lines:
             embed.add_field(name="Commands", value="No commands available.", inline=False)
 

@@ -6,6 +6,11 @@ from config import DB_PATH
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS staff_roles (
+                role_id INTEGER PRIMARY KEY, role_name TEXT
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS user_profiles (
                 user_id INTEGER PRIMARY KEY, username TEXT, display_name TEXT,
                 roles TEXT, join_date TEXT, last_seen TEXT,
@@ -80,3 +85,10 @@ async def get_monitored_channels() -> list[dict]:
         async with db.execute("SELECT * FROM monitored_channels WHERE active = 1") as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+async def get_staff_role_ids() -> set[int]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT role_id FROM staff_roles") as cursor:
+            rows = await cursor.fetchall()
+            return {row["role_id"] for row in rows}

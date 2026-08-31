@@ -3,16 +3,19 @@ import aiohttp
 import logging
 import discord
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from discord.ext import tasks
 import aiosqlite
 import cognee
 
 from config import (
     MONITOR_PROMPT_FILE, SERVER_RULES_FILE, MONITOR_INTERVAL_MINUTES,
-    MONITOR_MAX_MESSAGES_PER_CHANNEL, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, REQUEST_TIMEOUT, DB_PATH
+    MONITOR_MAX_MESSAGES_PER_CHANNEL, MONITOR_MAX_IMAGES_PER_CYCLE,
+    ALLOWED_IMAGE_EXTENSIONS, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, REQUEST_TIMEOUT, DB_PATH
 )
 from core.db import get_monitored_channels, get_config, set_config
 from core.memory import cognee_in_background, release_cognee_lock
+from utils.attachments import collect_image_attachments, VISION_ENABLED
 
 log = logging.getLogger("rag-bot")
 
@@ -24,11 +27,6 @@ KEY_INTERVAL = "monitor_interval_minutes"
 
 # How often the scheduler checks whether the checkpoint has passed
 SCHEDULER_TICK_SECONDS = 30
-
-
-# ---------------------------------------------------------------------------
-# Persistent checkpoint scheduling
-# ---------------------------------------------------------------------------
 
 async def get_interval_minutes() -> int:
     """Effective monitoring interval: runtime override if set, else env default."""
@@ -65,11 +63,6 @@ async def schedule_next_from_now() -> None:
     await set_config(KEY_NEXT_RUN, str(next_run.timestamp()))
     log.info("Monitoring checkpoint set: next scan at %s (interval: %dm).", next_run.isoformat(), interval)
 
-
-# ---------------------------------------------------------------------------
-# Prompts & message fetching
-# ---------------------------------------------------------------------------
-
 def load_monitoring_prompt() -> str:
     try:
         if MONITOR_PROMPT_FILE.exists():
@@ -95,9 +88,10 @@ async def fetch_new_messages_for_channel(channel: discord.TextChannel, last_mess
         after = discord.Object(id=last_message_id) if last_message_id > 0 else None
         async for msg in channel.history(limit=MONITOR_MAX_MESSAGES_PER_CHANNEL, after=after, oldest_first=True):
             if msg.author.bot: continue
-            if not msg.clean_content: continue
+            # Keep messages that have text OR attachments (images are evaluated separately).
+            if not msg.clean_content and not msg.attachments: continue
             messages.append(msg)
-    except Exception as e:
+    except Exception:
         log.exception("Failed to fetch history for channel %s", channel.id)
     return messages
 
@@ -111,44 +105,96 @@ async def get_latest_message_id(channel: discord.TextChannel) -> int | None:
         log.exception("Failed to fetch latest message for channel %s", channel.id)
     return None
 
+def _image_attachments(msg: discord.Message) -> list:
+    """Image attachments on a message (mirrors the chat-side detection logic)."""
+    return [
+        att for att in msg.attachments
+        if (att.content_type and att.content_type.startswith("image/"))
+        or Path(att.filename or "").suffix.lower() in ALLOWED_IMAGE_EXTENSIONS
+    ]
 
-# ---------------------------------------------------------------------------
-# Context assembly
-# ---------------------------------------------------------------------------
 
-def build_channel_section(channel: discord.TextChannel, mc: dict, messages: list[discord.Message],
-                          index: int, total: int) -> str:
-    """Assemble one channel's new messages into a clearly framed context block."""
-    lines = [f"=== MONITORED CHANNEL {index} OF {total}: #{channel.name} ==="]
-    lines.append(f"Channel topic: {channel.topic if channel.topic else '(No topic set)'}")
-    lines.append(f"Monitoring reason: {mc['reason']}")
+async def collect_message_attachments(msg: discord.Message, budget: list[int]) -> tuple[list[dict], list[str]]:
+    """Collect image content parts for one monitored message, honoring the shared cycle budget.
+
+    budget is a one-element list [remaining_image_slots] shared across the whole scan.
+    Returns (image_content_parts, marker_lines).
+    """
+    markers = []
+    image_atts = _image_attachments(msg)
+    if not image_atts:
+        return [], markers
+
+    names = ", ".join(att.filename or "image" for att in image_atts)
+
+    if not VISION_ENABLED:
+        markers.append(f"{msg.author.display_name} attached image(s), not analyzed (vision disabled): {names}")
+        return [], markers
+
+    if budget[0] <= 0:
+        markers.append(f"{msg.author.display_name} attached image(s), not included (scan image cap reached): {names}")
+        return [], markers
+
+    blocks, _ = await collect_image_attachments(msg)
+    if not blocks:
+        markers.append(f"{msg.author.display_name} attached image(s) that could not be processed: {names}")
+        return [], markers
+
+    if len(blocks) > budget[0]:
+        dropped = len(blocks) - budget[0]
+        blocks = blocks[:budget[0]]
+        markers.append(f"{dropped} additional image(s) from {msg.author.display_name} omitted (scan image cap).")
+    budget[0] -= len(blocks)
+    return blocks, markers
+
+
+def build_channel_section(channel: discord.TextChannel, mc: dict, prepared_messages: list,
+                          index: int, total: int) -> list[dict]:
+    """Assemble one channel's messages into multimodal content parts.
+
+    Each message contributes a text line (timestamp, author, content) followed
+    immediately by that message's image parts — this adjacency is what lets the
+    model attribute every image to its author and channel.
+    """
+    header = [
+        f"=== MONITORED CHANNEL {index} OF {total}: #{channel.name} ===",
+        f"Channel topic: {channel.topic if channel.topic else '(No topic set)'}",
+        f"Monitoring reason: {mc['reason']}",
+    ]
     if mc["keywords"]:
-        lines.append(f"Keywords to watch: {mc['keywords']}")
-    lines.append(f"{len(messages)} new message(s) since the last scan, oldest first:")
-    for msg in messages:
+        header.append(f"Keywords to watch: {mc['keywords']}")
+    header.append(f"{len(prepared_messages)} new message(s) since the last scan, oldest first:")
+
+    parts = [{"type": "text", "text": "\n".join(header)}]
+    for msg, image_blocks, markers in prepared_messages:
         timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M UTC")
-        lines.append(f"[{timestamp}] {msg.author.display_name}: {msg.clean_content}")
-    return "\n".join(lines)
+        text_content = msg.clean_content or "(no text content)"
+        parts.append({"type": "text", "text": f"[{timestamp}] {msg.author.display_name}: {text_content}"})
+        for marker in markers:
+            parts.append({"type": "text", "text": f"[{timestamp}] {marker}"})
+        parts.extend(image_blocks)
+    return parts
 
-
-# ---------------------------------------------------------------------------
-# Evaluation (LLM verdict + action)
-# ---------------------------------------------------------------------------
-
-async def run_monitoring_evaluation(bot: discord.Client, channel_texts: list[str], is_emergency: bool = False):
+async def run_monitoring_evaluation(bot: discord.Client, sections: list[list[dict]], is_emergency: bool = False):
     global monitoring_in_progress
     monitoring_prompt = load_monitoring_prompt()
-    if not monitoring_prompt: return
+    if not monitoring_prompt:
+        return
 
-    batched_context = "\n\n".join(channel_texts)
-    full_prompt = f"{monitoring_prompt}\n\n=== MONITORED CHANNEL MESSAGES ===\n{batched_context}\n=== END MESSAGES ==="
+    content_parts = [{"type": "text", "text": f"{monitoring_prompt}\n\n=== MONITORED CHANNEL MESSAGES ==="}]
+    for section in sections:
+        content_parts.extend(section)
+    content_parts.append({"type": "text", "text": "=== END MESSAGES ==="})
+
     url = f"{LLM_BASE_URL}/chat/completions"
     headers = {"Authorization": f"Bearer {LLM_API_KEY}"} if LLM_API_KEY else {}
     payload = {
         "model": LLM_MODEL_ID,
-        "messages": [{"role": "user", "content": full_prompt}],
+        "messages": [{"role": "user", "content": content_parts}],
         "temperature": 0.1,
         "stream": False,
+        # Monitoring verdicts are classification, not conversation — no thinking needed.
+        "chat_template_kwargs": {"enable_thinking": False},
     }
 
     timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
@@ -189,11 +235,6 @@ async def run_monitoring_evaluation(bot: discord.Client, channel_texts: list[str
         else:
             log.warning("Monitoring: No staff channel configured.")
 
-
-# ---------------------------------------------------------------------------
-# Scheduled cycle
-# ---------------------------------------------------------------------------
-
 async def run_monitoring_cycle(bot: discord.Client) -> None:
     """One scheduled monitoring pass over all active monitored channels."""
     global monitoring_in_progress
@@ -207,7 +248,8 @@ async def run_monitoring_cycle(bot: discord.Client) -> None:
 
     monitoring_in_progress = True
     try:
-        scan_results = []      # (channel, config, new_messages)
+        image_budget = [MONITOR_MAX_IMAGES_PER_CYCLE]
+        scan_results = []      # (channel, config, prepared_messages)
         baseline_updates = {}  # channel_id -> latest message id (first-scan baseline)
 
         for mc in monitored:
@@ -231,23 +273,27 @@ async def run_monitoring_cycle(bot: discord.Client) -> None:
                                  channel.name, latest_id)
                 continue
 
-            scan_results.append((channel, mc, new_messages))
+            prepared = []
+            for msg in new_messages:
+                blocks, markers = await collect_message_attachments(msg, image_budget)
+                prepared.append((msg, blocks, markers))
+            scan_results.append((channel, mc, prepared))
 
         # LLM is only called when at least one channel has new messages.
         if scan_results:
             total = len(scan_results)
             sections = [
-                build_channel_section(channel, mc, messages, index, total)
-                for index, (channel, mc, messages) in enumerate(scan_results, start=1)
+                build_channel_section(channel, mc, prepared, index, total)
+                for index, (channel, mc, prepared) in enumerate(scan_results, start=1)
             ]
             await run_monitoring_evaluation(bot, sections, is_emergency=False)
 
         # Persist scan positions only after a successful pass.
         async with aiosqlite.connect(DB_PATH) as db:
-            for channel, mc, messages in scan_results:
+            for channel, mc, prepared in scan_results:
                 await db.execute(
                     "UPDATE monitored_channels SET last_message_id = ? WHERE channel_id = ?",
-                    (messages[-1].id, mc["channel_id"]),
+                    (prepared[-1][0].id, mc["channel_id"]),
                 )
             for channel_id, latest_id in baseline_updates.items():
                 await db.execute(
@@ -289,13 +335,8 @@ async def monitoring_scheduler(bot: discord.Client):
     except Exception as e:
         log.exception("Monitoring scheduler tick failed: %s", e)
 
-
-# ---------------------------------------------------------------------------
-# Emergency (keyword) monitoring — unchanged behavior
-# ---------------------------------------------------------------------------
-
 async def emergency_monitoring(bot: discord.Client, channel: discord.TextChannel, channel_config: dict,
-                                 trigger_message: discord.Message):
+                               trigger_message: discord.Message):
     global monitoring_in_progress
     if monitoring_in_progress:
         log.info("Emergency monitoring: Skipping, another session is in progress.")
@@ -306,20 +347,31 @@ async def emergency_monitoring(bot: discord.Client, channel: discord.TextChannel
         messages = []
         async for msg in channel.history(limit=MONITOR_MAX_MESSAGES_PER_CHANNEL, oldest_first=True):
             if msg.author.bot: continue
-            if not msg.clean_content: continue
+            if not msg.clean_content and not msg.attachments: continue
             messages.append(msg)
-        if not messages: return
+        if not messages:
+            return
 
-        section = f"#{channel.name}\n"
-        topic_str = channel.topic if channel.topic else "(No topic set)"
-        section += f"Channel topic: {topic_str}\n"
-        section += f"Monitoring reason: {channel_config['reason']}\n"
+        image_budget = [MONITOR_MAX_IMAGES_PER_CYCLE]
+        header = [
+            f"=== EMERGENCY MONITORING: #{channel.name} ===",
+            f"Channel topic: {channel.topic if channel.topic else '(No topic set)'}",
+            f"Monitoring reason: {channel_config['reason']}",
+        ]
         if channel_config["keywords"]:
-            section += f"Keywords to watch: {channel_config['keywords']}\n"
-        section += f"Trigger: A keyword was detected in a message by {trigger_message.author.display_name}.\n"
-        section += "\nMessages:\n"
+            header.append(f"Keywords to watch: {channel_config['keywords']}")
+        header.append(f"Trigger: A keyword was detected in a message by {trigger_message.author.display_name}.")
+        header.append(f"{len(messages)} recent message(s), oldest first:")
+
+        section = [{"type": "text", "text": "\n".join(header)}]
         for msg in messages:
-            section += f"[{msg.author.display_name}]: {msg.clean_content}\n"
+            blocks, markers = await collect_message_attachments(msg, image_budget)
+            timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M UTC")
+            text_content = msg.clean_content or "(no text content)"
+            section.append({"type": "text", "text": f"[{timestamp}] {msg.author.display_name}: {text_content}"})
+            for marker in markers:
+                section.append({"type": "text", "text": f"[{timestamp}] {marker}"})
+            section.extend(blocks)
 
         await run_monitoring_evaluation(bot, [section], is_emergency=True)
 

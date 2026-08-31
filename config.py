@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -37,12 +38,18 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 
 # LiteLLM (Cognee) requires the "openai/" prefix in LLM_MODEL.
 # PydanticAI (the bot) just wants the raw model ID. We strip it here.
+MODELS_DIR = Path(os.getenv("MODELS_DIR", "models")).resolve()
 raw_model = os.getenv("LLM_MODEL", "local-model").strip()
 LLM_MODEL_ID = raw_model.split("/", 1)[-1] if "/" in raw_model else raw_model
+
+LLM_SERVER_MANAGER = os.getenv("LLM_SERVER_MANAGER", "external").lower()
+LLAMA_SERVER_BIN = os.getenv("LLAMA_SERVER_BIN", "llama-server")
+LLAMA_PORT = urlparse(os.getenv("LLM_ENDPOINT", "http://127.0.0.1:8000/v1")).port or 8000
 
 # Monitoring
 MONITOR_INTERVAL_MINUTES = int(os.getenv("MONITOR_INTERVAL_MINUTES", "180"))
 MONITOR_MAX_MESSAGES_PER_CHANNEL = int(os.getenv("MONITOR_MAX_MESSAGES_PER_CHANNEL", "50"))
+MONITOR_MAX_IMAGES_PER_CYCLE = int(os.getenv("MONITOR_MAX_IMAGES_PER_CYCLE", "6"))
 
 # Images
 MAX_IMAGE_ATTACHMENTS = int(os.getenv("MAX_IMAGE_ATTACHMENTS", "3"))

@@ -11,6 +11,8 @@ ingest/*
 !ingest/.gitkeep
 prompt/*
 !prompt/.gitkeep
+models/*
+!models/.gitkeep
 llama-cpp-python
 .idea/
 .DS_Store
@@ -18,6 +20,6 @@ Thumbs.db
 *.log
 *.json
 *.txt
-*.gguf
+*.sh
 codebase_dump.py
 .agents/skills/*
