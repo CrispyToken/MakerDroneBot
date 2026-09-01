@@ -108,9 +108,14 @@ async def answer_question(bot: discord.Client, message: discord.Message, questio
             history_text = "[Recent Conversation History]\n" + "\n".join(lines) + "\n[End of History]\n\n"
 
         if images:
-            user_content = [{"type": "text", "text": prompt_text}, *images]
+            from pydantic_ai import ImageUrl
+            pydantic_images = [ImageUrl(url=img["image_url"]["url"]) for img in images]
+
+            full_prompt = prompt_text
             if history_text:
-                user_content[0]["text"] = history_text + user_content[0]["text"]
+                full_prompt = history_text + full_prompt
+
+            user_content = [full_prompt, *pydantic_images]
         else:
             user_content = history_text + prompt_text
 

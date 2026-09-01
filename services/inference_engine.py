@@ -14,6 +14,8 @@ BOOL_FLAGS = {
     "mlock", "mmap", "no-mmap",
     "kv-offload", "no-kv-offload",
     "kv-unified", "no-kv-unified",
+    "mmproj-offload", "no-mmproj-offload",
+    "cpu-moe",
     "direct-io", "no-direct-io",
     "jinja", "no-jinja",
     "webui", "no-webui",
@@ -39,13 +41,15 @@ def parse_preset_to_cli_args(preset_path: Path, model_filename: str) -> list[str
     """
     Parses a llama.cpp INI preset file and converts it to CLI arguments.
     Reads from the [*] (global) section and the section matching the model filename.
+    Supports sharded models by matching if the section name is a prefix of the filename stem.
     """
     cli_args = []
     current_section = None
     model_stem = Path(model_filename).stem
 
-    # We want to collect args from [*] and the specific model section
-    target_sections = {'*', model_stem, model_filename}
+    exact_targets = {'*', model_stem.lower(), model_filename.lower()}
+
+    log.info(f"Parsing preset {preset_path.name} for model '{model_filename}' (stem: '{model_stem}')")
 
     try:
         with open(preset_path, 'r', encoding='utf-8') as f:
@@ -54,18 +58,25 @@ def parse_preset_to_cli_args(preset_path: Path, model_filename: str) -> list[str
                 if not line or line.startswith('#') or line.startswith(';'):
                     continue
                 if line.startswith('[') and line.endswith(']'):
-                    current_section = line[1:-1].strip()
+                    current_section_raw = line[1:-1].strip()
+                    current_section_lower = current_section_raw.lower()
+
+                    if current_section_lower in exact_targets or model_stem.lower().startswith(current_section_lower):
+                        log.info(f" -> Applying INI section: [{current_section_raw}]")
+                        current_section = current_section_raw
+                    else:
+                        current_section = None
                     continue
 
-                if current_section not in target_sections:
+                if current_section is None:
                     continue
 
                 if '=' in line:
                     key, value = line.split('=', 1)
                     key = key.strip().lstrip('-')  # Normalize if they included dashes
                     value = value.strip()
-
                     val_lower = value.lower()
+
                     if key in BOOL_FLAGS:
                         if val_lower in ('1', 'true', 'on', 'yes'):
                             cli_args.append(f"--{key}")
@@ -76,6 +87,11 @@ def parse_preset_to_cli_args(preset_path: Path, model_filename: str) -> list[str
                         cli_args.extend([f"--{key}", value])
     except Exception as e:
         log.exception("Failed to parse preset.ini: %s", e)
+
+    if not cli_args:
+        log.warning("No preset arguments were loaded. Check that your INI section name matches the model filename.")
+    else:
+        log.info(f"Successfully loaded {len(cli_args)} preset arguments.")
 
     return cli_args
 
