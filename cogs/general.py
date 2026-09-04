@@ -12,8 +12,6 @@ class GeneralCog(commands.Cog):
                       usage="help [command]")
     async def help_cmd(self, ctx: commands.Context, *, command_name: str = ""):
         command_name = command_name.strip().lower()
-
-        # --- Detail view: !help <command> ---
         if command_name:
             command = self.bot.get_command(command_name)
             if command is None or command.hidden:
@@ -30,29 +28,20 @@ class GeneralCog(commands.Cog):
             await ctx.reply(embed=embed)
             return
 
-        # --- Overview view: !help ---
         embed = discord.Embed(
-            title="MakerDrone Commands",
-            description=f"All commands use the prefix `{COMMAND_PREFIX}`. Run `{COMMAND_PREFIX}help <command>` for full syntax.",
+            title="Commands",
+            description=f"Prefix: `{COMMAND_PREFIX}` · Run `{COMMAND_PREFIX}help <command>` for details.",
             color=discord.Color.blue(),
         )
 
         def format_command(command: commands.Command) -> str:
-            sig = f" {command.signature}" if command.signature else ""
-            syntax = f"{COMMAND_PREFIX}{command.name}{sig}"
-            description = (command.help or command.brief or "No description.").strip().split("\n")[0]
-            return f"`{syntax}`\n{description}"
+            desc = (command.help or command.brief or "No description.").strip().split("\n")[0]
+            return f"`{COMMAND_PREFIX}{command.name}` — {desc}"
 
         general_lines = []
         staff_lines = []
         for command in sorted(self.bot.commands, key=lambda c: c.name):
             if command.hidden or command.name == "help":
-                continue
-            try:
-                can_run = await command.can_run(ctx)
-            except Exception:
-                can_run = False
-            if not can_run:
                 continue
             entry = format_command(command)
             if command.checks:
@@ -61,12 +50,11 @@ class GeneralCog(commands.Cog):
                 general_lines.append(entry)
 
         if general_lines:
-            embed.add_field(name="General", value="\n\n".join(general_lines), inline=False)
+            embed.add_field(name="General", value="\n".join(general_lines), inline=False)
         if staff_lines:
-            embed.add_field(name="Staff", value="\n\n".join(staff_lines), inline=False)
+            embed.add_field(name="Staff", value="\n".join(staff_lines), inline=False)
         if not general_lines and not staff_lines:
             embed.add_field(name="Commands", value="No commands available.", inline=False)
-
         await ctx.reply(embed=embed)
 
     @commands.command(name="ping", help="Checks if the bot is alive.", usage="ping")

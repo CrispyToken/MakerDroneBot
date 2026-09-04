@@ -7,7 +7,7 @@ import aiosqlite
 import cognee
 import logging
 from datetime import datetime, timezone
-from config import INGEST_DIR, INGEST_EXTENSIONS, DB_PATH
+from config import INGEST_DIR, INGEST_EXTENSIONS, DB_PATH, COMMAND_PREFIX
 from core.memory import load_ingest_hashes, save_ingest_hashes, compute_file_hash, cognee_in_background, \
     release_cognee_lock
 from services.extractors import extract_text_from_file
@@ -152,12 +152,12 @@ class StaffCog(commands.Cog):
 
     @commands.command(name="monitor",
                       help=(
-                              "Manage channel monitoring.\n"
-                              "`!monitor list` — Show monitored channels, alert target, and schedule.\n"
-                              "`!monitor add #channel \"reason\" [keywords]` — Start monitoring a channel.\n"
-                              "`!monitor remove #channel` — Stop monitoring (scan position preserved).\n"
-                              "`!monitor setchannel #channel` — Set where alerts are sent.\n"
-                              "`!monitor setinterval <minutes>` — Set the scan interval (1–1440)."
+                              f"Manage channel monitoring.\n"
+                              f"`{COMMAND_PREFIX}monitor list` — Show monitored channels, alert target, and schedule.\n"
+                              f"`{COMMAND_PREFIX}monitor add #channel \"reason\" [keywords]` — Start monitoring a channel.\n"
+                              f"`{COMMAND_PREFIX}monitor remove #channel` — Stop monitoring (scan position preserved).\n"
+                              f"`{COMMAND_PREFIX}monitor setchannel #channel` — Set where alerts are sent.\n"
+                              f"`{COMMAND_PREFIX}monitor setinterval <minutes>` — Set the scan interval (1–1440)."
                       ),
                       usage="monitor <add | remove | list | setchannel | setinterval>")
     @is_staff()
@@ -180,7 +180,7 @@ class StaffCog(commands.Cog):
             if staff_ch:
                 lines.append(f"\n**Alerts go to:** <#{staff_ch}>")
             else:
-                lines.append("\n**Alerts go to:** Not configured. Use `!monitor setchannel #channel`")
+                lines.append(f"\n**Alerts go to:** Not configured. Use `{COMMAND_PREFIX}monitor setchannel #channel`")
             if next_run:
                 lines.append(
                     f"**Schedule:** every {interval}m — next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')}")
@@ -192,7 +192,7 @@ class StaffCog(commands.Cog):
         elif action == "add":
             channel_match = re.search(r"<#(\d+)>", args)
             if not channel_match:
-                await ctx.reply("Usage: `!monitor add #channel \"reason\" [keyword1,keyword2]`")
+                await ctx.reply(f"Usage: `{COMMAND_PREFIX}monitor add #channel \"reason\" [keyword1,keyword2]`")
                 return
             channel_id = int(channel_match.group(1))
             channel = self.bot.get_channel(channel_id)
@@ -205,7 +205,7 @@ class StaffCog(commands.Cog):
             reason_match = re.search(r'"([^"]+)"', args)
             if not reason_match:
                 await ctx.reply(
-                    "Please provide a reason in quotes. Usage: `!monitor add #channel \"reason\" [keywords]`")
+                    f"Please provide a reason in quotes. Usage: `{COMMAND_PREFIX}monitor add #channel \"reason\" [keywords]`")
                 return
             reason = reason_match.group(1)
             keywords = ""
@@ -239,7 +239,7 @@ class StaffCog(commands.Cog):
         elif action == "remove":
             channel_match = re.search(r"<#(\d+)>", args)
             if not channel_match:
-                await ctx.reply("Usage: `!monitor remove #channel`")
+                await ctx.reply(f"Usage: `{COMMAND_PREFIX}monitor remove #channel`")
                 return
             channel_id = int(channel_match.group(1))
             async with aiosqlite.connect(DB_PATH) as db:
@@ -250,7 +250,7 @@ class StaffCog(commands.Cog):
         elif action == "setchannel":
             channel_match = re.search(r"<#(\d+)>", args)
             if not channel_match:
-                await ctx.reply("Usage: `!monitor setchannel #channel`")
+                await ctx.reply(f"Usage: `{COMMAND_PREFIX}monitor setchannel #channel`")
                 return
             channel_id = channel_match.group(1)
             await set_config("staff_channel_id", channel_id)
@@ -260,7 +260,7 @@ class StaffCog(commands.Cog):
             try:
                 minutes = int(args.strip())
             except ValueError:
-                await ctx.reply("Usage: `!monitor setinterval <minutes>`")
+                await ctx.reply(f"Usage: `{COMMAND_PREFIX}monitor setinterval <minutes>`")
                 return
             if not (1 <= minutes <= 1440):
                 await ctx.reply("Interval must be between 1 and 1440 minutes.")
@@ -271,7 +271,7 @@ class StaffCog(commands.Cog):
 
         else:
             await ctx.reply(
-                "Unknown action. Use: `!monitor add`, `!monitor remove`, `!monitor list`, `!monitor setchannel`, or `!monitor setinterval`")
+                f"Unknown action. Use: `{COMMAND_PREFIX}monitor add`, `{COMMAND_PREFIX}monitor remove`, `{COMMAND_PREFIX}monitor list`, `{COMMAND_PREFIX}monitor setchannel`, or `{COMMAND_PREFIX}monitor setinterval`")
 
     @commands.command(name="profile", help="View the bot's memory of a user.", usage="profile [@User]")
     @is_staff()

@@ -16,6 +16,7 @@ from config import (
 from core.db import get_monitored_channels, get_config, set_config
 from core.memory import cognee_in_background, release_cognee_lock
 from utils.attachments import collect_image_attachments, VISION_ENABLED
+from core.console import print_completion
 
 log = logging.getLogger("rag-bot")
 
@@ -193,8 +194,7 @@ async def run_monitoring_evaluation(bot: discord.Client, sections: list[list[dic
         "messages": [{"role": "user", "content": content_parts}],
         "temperature": 0.1,
         "stream": False,
-        # Monitoring verdicts are classification, not conversation — no thinking needed.
-        "chat_template_kwargs": {"enable_thinking": False},
+        "chat_template_kwargs": {"enable_thinking": True},
     }
 
     timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
@@ -206,7 +206,10 @@ async def run_monitoring_evaluation(bot: discord.Client, sections: list[list[dic
                 log.error("Monitoring LLM call failed: %s %s", response.status, body[:300])
                 return
             data = await response.json()
-            decision_text = data["choices"][0]["message"]["content"].strip()
+            message_data = data["choices"][0]["message"]
+            decision_text = message_data["content"].strip()
+        print_completion(message_data.get("reasoning_content") or "", decision_text, source="monitor")
+        log.info("Monitoring decision: %s", decision_text[:200])
 
     log.info("Monitoring decision: %s", decision_text[:200])
 
