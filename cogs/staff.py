@@ -82,7 +82,6 @@ class StaffCog(commands.Cog):
         model_note = " Switching to the dedicated ingestion model for the graph pass." if use_ingest_model else ""
         await ctx.reply(
             f"Starting ingestion: {', '.join(status_parts)}.\n"
-            f"Extracting document text first; chat and monitoring will be paused while the knowledge graph is updated.{model_note}\n"
             "This may take a while. I will report back when finished.")
         # --- Phase 2: text extraction (CPU-only, still no lock) -----------
         # Docling parsing can take minutes on large PDFs; keeping it outside

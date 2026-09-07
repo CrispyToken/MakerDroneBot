@@ -11,8 +11,12 @@ from config import (
     HASH_RECORD_PATH, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID,
     LIGHTRAG_DIR, LIGHTRAG_EMBED_MODEL, LIGHTRAG_EMBED_DIM,
     LIGHTRAG_CHUNK_SIZE, LIGHTRAG_CHUNK_OVERLAP, LIGHTRAG_QUERY_MAX_TOKENS,
-    EXTRACT_LLM_TIMEOUT, LLM_TIMEOUT,
+    EXTRACT_LLM_TIMEOUT, LLM_TIMEOUT, LLM_MAX_EXTRACT_OUTPUT_TOKENS,
 )
+
+_embed_model = None
+_embed_lock = threading.Lock()
+_embed_call_lock = threading.Lock()   # serializes concurrent embed() calls
 
 log = logging.getLogger("rag-bot")
 
@@ -59,6 +63,7 @@ async def _llm_model_func(prompt, system_prompt=None, history_messages=None, **k
     from lightrag.llm.openai import openai_complete_if_cache
     default_timeout = max(EXTRACT_LLM_TIMEOUT, LLM_TIMEOUT)
     timeout = kwargs.pop("timeout", default_timeout)
+    kwargs.setdefault("max_tokens", LLM_MAX_EXTRACT_OUTPUT_TOKENS)
     return await openai_complete_if_cache(
         LLM_MODEL_ID,
         prompt,
@@ -84,7 +89,8 @@ def _get_embed_model():
 async def _embedding_func(texts: list[str]) -> np.ndarray:
     def _embed():
         model = _get_embed_model()
-        return np.array(list(model.embed(texts)))
+        with _embed_call_lock:
+            return np.array(list(model.embed(texts)))
     return await asyncio.to_thread(_embed)
 
 
