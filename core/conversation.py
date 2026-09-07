@@ -11,6 +11,7 @@ import re
 import services.skills as skills_module
 from core.llm_reasoning import chat_reasoning
 from core.console import print_user_line
+from core.locks import llm_lock
 
 log = logging.getLogger("rag-bot")
 
@@ -44,9 +45,13 @@ async def _keep_typing(channel: discord.abc.Messageable, stop_event: asyncio.Eve
 
 
 async def answer_question(bot: discord.Client, message: discord.Message, question: str):
+    if llm_lock.locked():
+        log.info("Chat request rejected: LLM is busy with another task.")
+        await message.reply("I'm currently processing another task. Please try again in a minute.")
+        return
+
     stop_typing = asyncio.Event()
     typing_task = asyncio.create_task(_keep_typing(message.channel, stop_typing))
-
     try:
         images, image_warnings = await collect_image_attachments(message)
         text_blocks, text_warnings = await collect_text_attachments(message)
@@ -59,7 +64,6 @@ async def answer_question(bot: discord.Client, message: discord.Message, questio
             log.info("Explicit skill activation: %s", ", ".join(s.name for s in active_skills))
 
         question_for_model = user_question
-
         if not question_for_model:
             if images:
                 question_for_model = "Describe the attached image(s) in detail."
@@ -111,25 +115,32 @@ async def answer_question(bot: discord.Client, message: discord.Message, questio
         if images:
             from pydantic_ai import ImageUrl
             pydantic_images = [ImageUrl(url=img["image_url"]["url"]) for img in images]
-
             full_prompt = prompt_text
             if history_text:
                 full_prompt = history_text + full_prompt
-
             user_content = [full_prompt, *pydantic_images]
         else:
             user_content = history_text + prompt_text
 
         agent = get_agent()
+
         if isinstance(user_content, str):
             print_user_line(user_content)
         else:
             print_user_line(next((c for c in user_content if isinstance(c, str)), "(multimodal input)"))
-        async with chat_reasoning():
-            result = await agent.run(user_content, deps=deps)
+
+        try:
+            await asyncio.wait_for(llm_lock.acquire(), timeout=5)
+        except asyncio.TimeoutError:
+            await message.reply("I'm currently processing another task. Please try again in a minute.")
+            return
+        try:
+            async with chat_reasoning():
+                result = await agent.run(user_content, deps=deps)
+        finally:
+            llm_lock.release()
 
         await send_final_answer(message, result.output)
-
     except RuntimeError as e:
         log.exception("Model/request error")
         await message.reply(f"Model/request error:\n`{e}`")

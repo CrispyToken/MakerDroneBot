@@ -2,10 +2,9 @@ from dataclasses import dataclass, field
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
-import cognee
 import logging
 from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, SYSTEM_PROMPT_FILE
-from core.memory import cognee_in_background, cognee_recall, release_cognee_lock
+from core.memory import memory_remember, memory_recall_dynamic, memory_recall_knowledge
 from services.web_search import execute_web_search
 import services.skills as skills_module
 
@@ -53,7 +52,7 @@ def build_system_prompt(ctx: RunContext[BotDependencies]) -> str:
         base_prompt = base_prompt.replace("{{CURRENT_CHANNEL_TOPIC}}", topic_text)
 
     channel_list_section = (
-        "\n\n[Server Channels — for your internal orientation only. "
+        "\n\n[Server Channels. For your internal orientation only. "
         "Do not mention this list to users, do not reference it in responses, "
         "and do not suggest channels unless directly asked.]\n"
         f"{deps.server_channels}"
@@ -119,63 +118,39 @@ def get_agent() -> Agent[BotDependencies, str]:
             ctx.deps.active_skills.append(skill)
         return (
             f"Skill '{skill.name}' is now ACTIVE. The instructions below are MANDATORY "
-            f"for this task — follow them exactly:\n\n{skill.content}"
+            f"for this task. Follow them exactly:\n\n{skill.content}"
         )
 
     @agent.tool
     async def search_game_knowledge(ctx: RunContext[BotDependencies], query: str) -> str:
         try:
-            insights = await cognee_recall(query)
-            if not insights: return "No relevant game knowledge found."
-            formatted = []
-            seen = set()
-            for insight in insights:
-                ds_name = getattr(insight, "dataset_name", None) or (
-                    insight.get("dataset_name") if isinstance(insight, dict) else None)
-                text = getattr(insight, "text", None) or (
-                    insight.get("text", str(insight)) if isinstance(insight, dict) else str(insight))
-                if ds_name == "event_horizon_dynamic": continue
-                if text and text not in seen:
-                    seen.add(text)
-                    formatted.append(text)
-            if not formatted: return "No relevant game knowledge found."
-            return "\n".join(f"{i}. {t}" for i, t in enumerate(formatted[:5], 1))
+            context = await memory_recall_knowledge(query)
+            if not context or not context.strip():
+                return "No relevant game knowledge found."
+            return context.strip()
         except Exception as e:
-            log.exception("Cognee game knowledge recall failed")
+            log.exception("Game knowledge recall failed")
             return f"Game knowledge search failed: {e}"
 
     @agent.tool
     async def search_memory(ctx: RunContext[BotDependencies], query: str) -> str:
         try:
-            insights = await cognee_recall(query)
-            if not insights: return "No relevant memories found."
-            formatted = []
-            seen = set()
-            for insight in insights:
-                ds_name = getattr(insight, "dataset_name", None) or (
-                    insight.get("dataset_name") if isinstance(insight, dict) else None)
-                text = getattr(insight, "text", None) or (
-                    insight.get("text", str(insight)) if isinstance(insight, dict) else str(insight))
-                if ds_name != "event_horizon_dynamic": continue
-                if text and text not in seen:
-                    seen.add(text)
-                    formatted.append(text)
-            if not formatted: return "No relevant memories found."
-            return "\n".join(f"{i}. {t}" for i, t in enumerate(formatted[:5], 1))
+            context = await memory_recall_dynamic(query)
+            if not context or not context.strip():
+                return "No relevant memories found."
+            return context.strip()
         except Exception as e:
-            log.exception("Cognee memory recall failed")
+            log.exception("Dynamic memory recall failed")
             return f"Memory search failed: {e}"
 
     @agent.tool
     async def save_memory(ctx: RunContext[BotDependencies], fact: str) -> str:
         try:
-            await cognee_in_background(cognee.remember, fact, dataset_name="event_horizon_dynamic")
-            return f"Successfully saved and processed dynamic memory: {fact}"
+            await memory_remember(fact)
+            return f"Successfully saved dynamic memory: {fact}"
         except Exception as e:
-            log.exception("Cognee remember failed")
+            log.exception("Memory save failed")
             return f"Failed to save memory: {e}"
-        finally:
-            await release_cognee_lock()
 
     @agent.tool
     async def search_web(ctx: RunContext[BotDependencies], query: str) -> str:

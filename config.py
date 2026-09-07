@@ -9,10 +9,6 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
 COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
 
-# Cognee
-COGNEE_CHUNK_SIZE = int(os.getenv("COGNEE_CHUNK_SIZE", "1200"))
-COGNEE_CHUNK_OVERLAP = int(os.getenv("COGNEE_CHUNK_OVERLAP", "150"))
-
 # SearXNG
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8080").rstrip("/")
 
@@ -30,17 +26,30 @@ SKILLS_DIRS = [
 ]
 
 # LLM / Inference Backend
-# We read LLM_ENDPOINT and LLM_MODEL (which Cognee/LiteLLM require).
 LLM_BASE_URL = os.getenv("LLM_ENDPOINT", "http://127.0.0.1:1234/v1").rstrip("/")
 if not LLM_BASE_URL.endswith("/v1"):
     LLM_BASE_URL += "/v1"
 LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 
-# LiteLLM (Cognee) requires the "openai/" prefix in LLM_MODEL.
+# LiteLLM requires the "openai/" prefix in LLM_MODEL.
 # PydanticAI (the bot) just wants the raw model ID. We strip it here.
 MODELS_DIR = Path(os.getenv("MODELS_DIR", "models")).resolve()
-raw_model = os.getenv("LLM_MODEL", "local-model").strip()
-LLM_MODEL_ID = raw_model.split("/", 1)[-1] if "/" in raw_model else raw_model
+
+def _strip_vendor_prefix(raw: str) -> str:
+    """'openai/vendor/file.gguf' -> 'vendor/file.gguf'."""
+    raw = raw.strip()
+    return raw.split("/", 1)[-1] if "/" in raw else raw
+
+# Default model (chat / monitoring / everything except ingest)
+raw_model = os.getenv("LLM_MODEL", "local-model")
+LLM_DEFAULT_MODEL_PATH = _strip_vendor_prefix(raw_model)
+
+# Optional dedicated ingest model. Empty = ingest runs on the default model.
+raw_ingest_model = os.getenv("LLM_INGEST_MODEL", "")
+LLM_INGEST_MODEL_PATH = _strip_vendor_prefix(raw_ingest_model) if raw_ingest_model.strip() else ""
+
+# Static alias used by every OpenAI-compatible client. Do not change.
+LLM_MODEL_ID = "local-model"
 
 LLM_SERVER_MANAGER = os.getenv("LLM_SERVER_MANAGER", "external").lower()
 LLAMA_SERVER_BIN = os.getenv("LLAMA_SERVER_BIN", "llama-server")
@@ -77,6 +86,17 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "memory.db"
 HASH_RECORD_PATH = DATA_DIR / "ingest_hashes.json"
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "180"))
+
+# Memory backend (LightRAG)
+LIGHTRAG_DIR = DATA_DIR / "lightrag"
+LIGHTRAG_DIR.mkdir(parents=True, exist_ok=True)
+LIGHTRAG_EMBED_MODEL = os.getenv("LIGHTRAG_EMBED_MODEL", "intfloat/multilingual-e5-large")
+LIGHTRAG_EMBED_DIM = int(os.getenv("LIGHTRAG_EMBED_DIM", "1024"))
+LIGHTRAG_CHUNK_SIZE = int(os.getenv("LIGHTRAG_CHUNK_SIZE", "1024"))
+LIGHTRAG_CHUNK_OVERLAP = int(os.getenv("LIGHTRAG_CHUNK_OVERLAP", "150"))
+LIGHTRAG_QUERY_MAX_TOKENS = int(os.getenv("LIGHTRAG_QUERY_MAX_TOKENS", "6000"))
+EXTRACT_LLM_TIMEOUT = int(os.getenv("EXTRACT_LLM_TIMEOUT", "1800"))
+LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "1800"))
 
 # Discord Limits
 DISCORD_CHAR_LIMIT = max(500, min(int(os.getenv("DISCORD_CHAR_LIMIT", "2000")), 2000))

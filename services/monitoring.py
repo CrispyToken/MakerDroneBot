@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from discord.ext import tasks
 import aiosqlite
-import cognee
+from core.locks import llm_lock
 
 from config import (
     MONITOR_PROMPT_FILE, SERVER_RULES_FILE, MONITOR_INTERVAL_MINUTES,
@@ -14,13 +14,11 @@ from config import (
     ALLOWED_IMAGE_EXTENSIONS, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, REQUEST_TIMEOUT, DB_PATH
 )
 from core.db import get_monitored_channels, get_config, set_config
-from core.memory import cognee_in_background, release_cognee_lock
+from core.memory import memory_remember
 from utils.attachments import collect_image_attachments, VISION_ENABLED
 from core.console import print_completion
 
 log = logging.getLogger("rag-bot")
-
-monitoring_in_progress = False
 
 # Persistent schedule checkpoint keys (stored in bot_config)
 KEY_NEXT_RUN = "monitor_next_run_at"
@@ -154,7 +152,7 @@ def build_channel_section(channel: discord.TextChannel, mc: dict, prepared_messa
     """Assemble one channel's messages into multimodal content parts.
 
     Each message contributes a text line (timestamp, author, content) followed
-    immediately by that message's image parts — this adjacency is what lets the
+    immediately by that message's image parts. This adjacency is what lets the
     model attribute every image to its author and channel.
     """
     header = [
@@ -177,7 +175,6 @@ def build_channel_section(channel: discord.TextChannel, mc: dict, prepared_messa
     return parts
 
 async def run_monitoring_evaluation(bot: discord.Client, sections: list[list[dict]], is_emergency: bool = False):
-    global monitoring_in_progress
     monitoring_prompt = load_monitoring_prompt()
     if not monitoring_prompt:
         return
@@ -211,15 +208,13 @@ async def run_monitoring_evaluation(bot: discord.Client, sections: list[list[dic
         print_completion(message_data.get("reasoning_content") or "", decision_text, source="monitor")
         log.info("Monitoring decision: %s", decision_text[:200])
 
-    log.info("Monitoring decision: %s", decision_text[:200])
-
     if decision_text.startswith("IGNORE"):
         log.info("Monitoring: Decision is IGNORE.")
     elif decision_text.startswith("REMEMBER:"):
         fact = decision_text[len("REMEMBER:"):].strip()
         if fact:
             try:
-                await cognee_in_background(cognee.remember, fact, dataset_name="event_horizon_dynamic")
+                await memory_remember(fact)
                 log.info("Monitoring: Saved fact to dynamic memory.")
             except Exception as e:
                 log.exception("Monitoring: Failed to save fact: %s", e)
@@ -238,78 +233,81 @@ async def run_monitoring_evaluation(bot: discord.Client, sections: list[list[dic
         else:
             log.warning("Monitoring: No staff channel configured.")
 
-async def run_monitoring_cycle(bot: discord.Client) -> None:
-    """One scheduled monitoring pass over all active monitored channels."""
-    global monitoring_in_progress
-    if monitoring_in_progress:
-        log.info("Monitoring cycle: Skipping, another session is in progress.")
-        return
+async def run_monitoring_cycle(bot: discord.Client) -> bool:
+    """One scheduled monitoring pass over all active monitored channels.
 
+    Returns True if the cycle ran (or there was nothing to scan), False if
+    it was skipped because the global LLM lock was held elsewhere (e.g. an
+    ingestion is in progress). The scheduler uses this to decide whether to
+    advance its checkpoint.
+    """
     monitored = await get_monitored_channels()
     if not monitored:
-        return
+        return True
 
-    monitoring_in_progress = True
-    try:
-        image_budget = [MONITOR_MAX_IMAGES_PER_CYCLE]
-        scan_results = []      # (channel, config, prepared_messages)
-        baseline_updates = {}  # channel_id -> latest message id (first-scan baseline)
+    if llm_lock.locked():
+        log.info("Monitoring cycle: skipping, LLM is busy with another task.")
+        return False
 
-        for mc in monitored:
-            channel = bot.get_channel(mc["channel_id"])
-            if channel is None:
-                try:
-                    channel = await bot.fetch_channel(mc["channel_id"])
-                except Exception:
-                    log.warning("Monitoring: Could not access channel %s", mc["channel_id"])
+    async with llm_lock:
+        try:
+            image_budget = [MONITOR_MAX_IMAGES_PER_CYCLE]
+            scan_results = []      # (channel, config, prepared_messages)
+            baseline_updates = {}  # channel_id -> latest message id (first-scan baseline)
+
+            for mc in monitored:
+                channel = bot.get_channel(mc["channel_id"])
+                if channel is None:
+                    try:
+                        channel = await bot.fetch_channel(mc["channel_id"])
+                    except Exception:
+                        log.warning("Monitoring: Could not access channel %s", mc["channel_id"])
+                        continue
+
+                new_messages = await fetch_new_messages_for_channel(channel, mc["last_message_id"])
+                if not new_messages:
+                    # First scan of a channel with nothing eligible: set a baseline so we
+                    # don't re-pull the full history window on every subsequent cycle.
+                    if mc["last_message_id"] == 0:
+                        latest_id = await get_latest_message_id(channel)
+                        if latest_id:
+                            baseline_updates[mc["channel_id"]] = latest_id
+                            log.info("Monitoring: First scan of #%s found no eligible messages; baseline set to %s.",
+                                     channel.name, latest_id)
                     continue
 
-            new_messages = await fetch_new_messages_for_channel(channel, mc["last_message_id"])
-            if not new_messages:
-                # First scan of a channel with nothing eligible: set a baseline so we
-                # don't re-pull the full history window on every subsequent cycle.
-                if mc["last_message_id"] == 0:
-                    latest_id = await get_latest_message_id(channel)
-                    if latest_id:
-                        baseline_updates[mc["channel_id"]] = latest_id
-                        log.info("Monitoring: First scan of #%s found no eligible messages; baseline set to %s.",
-                                 channel.name, latest_id)
-                continue
+                prepared = []
+                for msg in new_messages:
+                    blocks, markers = await collect_message_attachments(msg, image_budget)
+                    prepared.append((msg, blocks, markers))
+                scan_results.append((channel, mc, prepared))
 
-            prepared = []
-            for msg in new_messages:
-                blocks, markers = await collect_message_attachments(msg, image_budget)
-                prepared.append((msg, blocks, markers))
-            scan_results.append((channel, mc, prepared))
+            # LLM is only called when at least one channel has new messages.
+            if scan_results:
+                total = len(scan_results)
+                sections = [
+                    build_channel_section(channel, mc, prepared, index, total)
+                    for index, (channel, mc, prepared) in enumerate(scan_results, start=1)
+                ]
+                await run_monitoring_evaluation(bot, sections, is_emergency=False)
 
-        # LLM is only called when at least one channel has new messages.
-        if scan_results:
-            total = len(scan_results)
-            sections = [
-                build_channel_section(channel, mc, prepared, index, total)
-                for index, (channel, mc, prepared) in enumerate(scan_results, start=1)
-            ]
-            await run_monitoring_evaluation(bot, sections, is_emergency=False)
+            # Persist scan positions only after a successful pass.
+            async with aiosqlite.connect(DB_PATH) as db:
+                for channel, mc, prepared in scan_results:
+                    await db.execute(
+                        "UPDATE monitored_channels SET last_message_id = ? WHERE channel_id = ?",
+                        (prepared[-1][0].id, mc["channel_id"]),
+                    )
+                for channel_id, latest_id in baseline_updates.items():
+                    await db.execute(
+                        "UPDATE monitored_channels SET last_message_id = ? WHERE channel_id = ?",
+                        (latest_id, channel_id),
+                    )
+                await db.commit()
+        except Exception as e:
+            log.exception("Monitoring cycle failed: %s", e)
 
-        # Persist scan positions only after a successful pass.
-        async with aiosqlite.connect(DB_PATH) as db:
-            for channel, mc, prepared in scan_results:
-                await db.execute(
-                    "UPDATE monitored_channels SET last_message_id = ? WHERE channel_id = ?",
-                    (prepared[-1][0].id, mc["channel_id"]),
-                )
-            for channel_id, latest_id in baseline_updates.items():
-                await db.execute(
-                    "UPDATE monitored_channels SET last_message_id = ? WHERE channel_id = ?",
-                    (latest_id, channel_id),
-                )
-            await db.commit()
-    except Exception as e:
-        log.exception("Monitoring cycle failed: %s", e)
-    finally:
-        monitoring_in_progress = False
-        await release_cognee_lock()
-        log.info("Monitoring cycle: Lock released.")
+    return True
 
 
 @tasks.loop(seconds=SCHEDULER_TICK_SECONDS)
@@ -332,60 +330,59 @@ async def monitoring_scheduler(bot: discord.Client):
 
         if now >= next_run:
             if now - next_run > timedelta(minutes=1):
-                log.info("Monitoring: checkpoint %s has passed; running catch-up scan.", next_run.isoformat())
-            await run_monitoring_cycle(bot)
-            await schedule_next_from_now()
+                log.info("Monitoring scheduler: catch-up scan (%s behind).", now - next_run)
+            ran = await run_monitoring_cycle(bot)
+            if ran:
+                await schedule_next_from_now()
+            else:
+                log.info("Monitoring scheduler: cycle skipped; retrying on next tick.")
     except Exception as e:
         log.exception("Monitoring scheduler tick failed: %s", e)
 
 async def emergency_monitoring(bot: discord.Client, channel: discord.TextChannel, channel_config: dict,
                                trigger_message: discord.Message):
-    global monitoring_in_progress
-    if monitoring_in_progress:
-        log.info("Emergency monitoring: Skipping, another session is in progress.")
+    if llm_lock.locked():
+        log.info("Emergency monitoring: skipping, LLM is busy with another task.")
         return
 
-    monitoring_in_progress = True
-    try:
-        messages = []
-        async for msg in channel.history(limit=MONITOR_MAX_MESSAGES_PER_CHANNEL, oldest_first=True):
-            if msg.author.bot: continue
-            if not msg.clean_content and not msg.attachments: continue
-            messages.append(msg)
-        if not messages:
-            return
+    async with llm_lock:
+        try:
+            messages = []
+            async for msg in channel.history(limit=MONITOR_MAX_MESSAGES_PER_CHANNEL, oldest_first=True):
+                if msg.author.bot: continue
+                if not msg.clean_content and not msg.attachments: continue
+                messages.append(msg)
 
-        image_budget = [MONITOR_MAX_IMAGES_PER_CYCLE]
-        header = [
-            f"=== EMERGENCY MONITORING: #{channel.name} ===",
-            f"Channel topic: {channel.topic if channel.topic else '(No topic set)'}",
-            f"Monitoring reason: {channel_config['reason']}",
-        ]
-        if channel_config["keywords"]:
-            header.append(f"Keywords to watch: {channel_config['keywords']}")
-        header.append(f"Trigger: A keyword was detected in a message by {trigger_message.author.display_name}.")
-        header.append(f"{len(messages)} recent message(s), oldest first:")
+            if not messages:
+                return
 
-        section = [{"type": "text", "text": "\n".join(header)}]
-        for msg in messages:
-            blocks, markers = await collect_message_attachments(msg, image_budget)
-            timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M UTC")
-            text_content = msg.clean_content or "(no text content)"
-            section.append({"type": "text", "text": f"[{timestamp}] {msg.author.display_name}: {text_content}"})
-            for marker in markers:
-                section.append({"type": "text", "text": f"[{timestamp}] {marker}"})
-            section.extend(blocks)
+            image_budget = [MONITOR_MAX_IMAGES_PER_CYCLE]
+            header = [
+                f"=== EMERGENCY MONITORING: #{channel.name} ===",
+                f"Channel topic: {channel.topic if channel.topic else '(No topic set)'}",
+                f"Monitoring reason: {channel_config['reason']}",
+            ]
+            if channel_config["keywords"]:
+                header.append(f"Keywords to watch: {channel_config['keywords']}")
+            header.append(f"Trigger: A keyword was detected in a message by {trigger_message.author.display_name}.")
+            header.append(f"{len(messages)} recent message(s), oldest first:")
 
-        await run_monitoring_evaluation(bot, [section], is_emergency=True)
+            section = [{"type": "text", "text": "\n".join(header)}]
+            for msg in messages:
+                blocks, markers = await collect_message_attachments(msg, image_budget)
+                timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M UTC")
+                text_content = msg.clean_content or "(no text content)"
+                section.append({"type": "text", "text": f"[{timestamp}] {msg.author.display_name}: {text_content}"})
+                for marker in markers:
+                    section.append({"type": "text", "text": f"[{timestamp}] {marker}"})
+                section.extend(blocks)
 
-        if messages:
-            async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute("UPDATE monitored_channels SET last_message_id = ? WHERE channel_id = ?",
-                                 (messages[-1].id, channel.id))
-                await db.commit()
-    except Exception as e:
-        log.exception("Emergency monitoring failed: %s", e)
-    finally:
-        monitoring_in_progress = False
-        await release_cognee_lock()
-        log.info("Emergency monitoring: Lock released.")
+            await run_monitoring_evaluation(bot, [section], is_emergency=True)
+
+            if messages:
+                async with aiosqlite.connect(DB_PATH) as db:
+                    await db.execute("UPDATE monitored_channels SET last_message_id = ? WHERE channel_id = ?",
+                                     (messages[-1].id, channel.id))
+                    await db.commit()
+        except Exception as e:
+            log.exception("Emergency monitoring failed: %s", e)

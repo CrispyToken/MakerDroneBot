@@ -4,25 +4,24 @@ import json
 import hashlib
 import logging
 from pathlib import Path
-import cognee
-from config import HASH_RECORD_PATH
+
+import numpy as np
+
+from config import (
+    HASH_RECORD_PATH, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID,
+    LIGHTRAG_DIR, LIGHTRAG_EMBED_MODEL, LIGHTRAG_EMBED_DIM,
+    LIGHTRAG_CHUNK_SIZE, LIGHTRAG_CHUNK_OVERLAP, LIGHTRAG_QUERY_MAX_TOKENS,
+    EXTRACT_LLM_TIMEOUT, LLM_TIMEOUT,
+)
 
 log = logging.getLogger("rag-bot")
+
+KNOWLEDGE_WORKSPACE = "knowledge"
+DYNAMIC_WORKSPACE = "dynamic"
 
 # ---------------------------------------------------------------------------
 # Persistent background event loop
 # ---------------------------------------------------------------------------
-# Cognee (via litellm + aiohttp) spawns background tasks and holds open
-# connections tied to the event loop they were created on. The old approach
-# created a NEW event loop for every operation and closed it right after,
-# which orphaned litellm's LoggingWorker and left aiohttp sessions unclosed
-# ("Event loop is closed" / "Unclosed client session").
-#
-# Instead we run ONE long-lived loop on a dedicated daemon thread and
-# schedule every Cognee coroutine onto it. Tasks and connections are reused
-# across operations and never torn down mid-flight.
-# ---------------------------------------------------------------------------
-
 _bg_loop: asyncio.AbstractEventLoop | None = None
 _bg_lock = threading.Lock()
 
@@ -34,13 +33,13 @@ def _get_bg_loop() -> asyncio.AbstractEventLoop:
             _bg_loop = asyncio.new_event_loop()
             threading.Thread(
                 target=_bg_loop.run_forever,
-                name="cognee-bg-loop",
+                name="memory-bg-loop",
                 daemon=True,
             ).start()
-        return _bg_loop
+    return _bg_loop
 
 
-async def cognee_in_background(coro_func, *args, **kwargs):
+async def memory_in_background(coro_func, *args, **kwargs):
     """Run a coroutine function on the persistent background loop and await
     its result without blocking the Discord gateway loop."""
     loop = _get_bg_loop()
@@ -48,60 +47,179 @@ async def cognee_in_background(coro_func, *args, **kwargs):
     return await asyncio.wrap_future(future)
 
 
-async def _close_graph_engine():
-    """Close the Cognee graph engine to release the DB file lock.
-    Must run on the background loop (where the engine lives)."""
+# ---------------------------------------------------------------------------
+# LLM + embedding providers
+# ---------------------------------------------------------------------------
+_embed_model = None
+_embed_lock = threading.Lock()
+
+
+async def _llm_model_func(prompt, system_prompt=None, history_messages=None, **kwargs):
+    """Route LightRAG's LLM calls to the local llama-server (OpenAI API)."""
+    from lightrag.llm.openai import openai_complete_if_cache
+    default_timeout = max(EXTRACT_LLM_TIMEOUT, LLM_TIMEOUT)
+    timeout = kwargs.pop("timeout", default_timeout)
+    return await openai_complete_if_cache(
+        LLM_MODEL_ID,
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages or [],
+        api_key=LLM_API_KEY or "no-key",
+        base_url=LLM_BASE_URL,
+        timeout=timeout,
+        **kwargs,
+    )
+
+
+def _get_embed_model():
+    global _embed_model
+    with _embed_lock:
+        if _embed_model is None:
+            from fastembed import TextEmbedding
+            log.info("Loading embedding model: %s", LIGHTRAG_EMBED_MODEL)
+            _embed_model = TextEmbedding(model_name=LIGHTRAG_EMBED_MODEL)
+    return _embed_model
+
+
+async def _embedding_func(texts: list[str]) -> np.ndarray:
+    def _embed():
+        model = _get_embed_model()
+        return np.array(list(model.embed(texts)))
+    return await asyncio.to_thread(_embed)
+
+
+# ---------------------------------------------------------------------------
+# LightRAG instances
+# ---------------------------------------------------------------------------
+_rags: dict = {}
+_init_lock = asyncio.Lock()
+
+
+async def _build_rag(workspace: str):
+    from lightrag import LightRAG
+    from lightrag.utils import EmbeddingFunc
+
+    working_dir = LIGHTRAG_DIR / workspace
+    working_dir.mkdir(parents=True, exist_ok=True)
+
+    rag = LightRAG(
+        working_dir=str(working_dir),
+        workspace=workspace,
+        llm_model_func=_llm_model_func,
+        llm_model_name=LLM_MODEL_ID,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=LIGHTRAG_EMBED_DIM,
+            max_token_size=8192,
+            model_name=LIGHTRAG_EMBED_MODEL,
+            func=_embedding_func,
+        ),
+        chunk_token_size=LIGHTRAG_CHUNK_SIZE,
+        chunk_overlap_token_size=LIGHTRAG_CHUNK_OVERLAP,
+        enable_llm_cache=True,
+        enable_llm_cache_for_entity_extract=True,
+    )
+    await rag.initialize_storages()
+    log.info("LightRAG workspace '%s' initialized at %s", workspace, working_dir)
+    return rag
+
+
+async def _get_rag(workspace: str):
+    async with _init_lock:
+        if workspace not in _rags:
+            _rags[workspace] = await _build_rag(workspace)
+    return _rags[workspace]
+
+
+def _query_param():
+    from lightrag import QueryParam
+    return QueryParam(
+        mode="hybrid",
+        only_need_context=True,
+        enable_rerank=False,
+        max_total_tokens=LIGHTRAG_QUERY_MAX_TOKENS,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+async def memory_remember(fact: str) -> None:
+    """Store one dynamic memory fact (entity extraction runs in background)."""
+    async def _do():
+        rag = await _get_rag(DYNAMIC_WORKSPACE)
+        await rag.ainsert(fact)
+    await memory_in_background(_do)
+
+
+async def memory_recall_dynamic(query: str) -> str:
+    """Recall retrieved context from dynamic memories (no answer synthesis)."""
+    async def _do():
+        rag = await _get_rag(DYNAMIC_WORKSPACE)
+        return await rag.aquery(query, param=_query_param())
+    return await memory_in_background(_do)
+
+
+async def memory_recall_knowledge(query: str) -> str:
+    """Recall retrieved context from ingested documents (no answer synthesis)."""
+    async def _do():
+        rag = await _get_rag(KNOWLEDGE_WORKSPACE)
+        return await rag.aquery(query, param=_query_param())
+    return await memory_in_background(_do)
+
+
+async def ingest_document(text: str, doc_id: str) -> None:
+    """Ingest one document into the knowledge workspace under a stable doc ID."""
+    async def _do():
+        rag = await _get_rag(KNOWLEDGE_WORKSPACE)
+        await rag.ainsert(text, ids=[doc_id])
+    await memory_in_background(_do)
+
+
+async def forget_document(doc_id: str) -> None:
+    """Remove one document (chunks, unique entities/relations, vectors)."""
+    async def _do():
+        rag = await _get_rag(KNOWLEDGE_WORKSPACE)
+        await rag.adelete_by_doc_id(doc_id)
+    await memory_in_background(_do)
+
+
+async def warmup_memory():
+    """Initialize both workspaces and preload the embedding model."""
     try:
-        from cognee.infrastructure.databases.graph.get_graph_engine import get_graph_engine
-        engine = await get_graph_engine()
-        if hasattr(engine, "close"):
-            result = engine.close()
-            if asyncio.iscoroutine(result):
-                await result
-        if hasattr(engine, "db") and hasattr(engine.db, "close"):
-            result = engine.db.close()
-            if asyncio.iscoroutine(result):
-                await result
-        log.debug("Cognee graph engine closed. File lock released.")
+        log.info("Warming up memory backends (LightRAG + embeddings)...")
+        async def _do():
+            await _get_rag(KNOWLEDGE_WORKSPACE)
+            await _get_rag(DYNAMIC_WORKSPACE)
+            await _embedding_func(["warmup"])
+        await memory_in_background(_do)
+        log.info("Memory backends ready.")
     except Exception as e:
-        log.warning("Failed to force-close Cognee engine: %s", e)
+        log.warning("Memory warmup failed (non-critical): %s", e)
 
 
-async def release_cognee_lock():
-    """Public helper. Safe to call from the Discord loop; the actual close
-    is scheduled onto the background loop."""
-    await cognee_in_background(_close_graph_engine)
-
-
-async def cognee_recall(query: str, datasets: list[str] | None = None) -> list:
-    """Run cognee.recall on the background loop and release the lock after."""
-    async def _do_recall():
-        try:
-            kwargs = {}
-            if datasets:
-                kwargs["datasets"] = datasets
-            return await cognee.recall(query, **kwargs)
-        finally:
-            await _close_graph_engine()
-    return await cognee_in_background(_do_recall)
-
-
-async def warmup_cognee():
-    """Pre-load the embedding model at startup without requiring existing data."""
+async def shutdown_memory():
+    """Finalize storages and stop the background loop. Call on bot shutdown."""
+    global _bg_loop
+    async def _do():
+        for rag in _rags.values():
+            try:
+                await rag.finalize_storages()
+            except Exception as e:
+                log.warning("finalize_storages failed: %s", e)
     try:
-        log.info("Warming up Cognee (pre-loading embedding model)...")
-        await cognee_in_background(cognee.recall, "warmup initialization")
-        log.info("Cognee warmup complete.")
-    except Exception as e:
-        error_str = str(e)
-        if "prerequisites not met" in error_str or "RecallPreconditionError" in error_str or "no database" in error_str.lower():
-            # Expected when no data has been ingested yet.
-            # The embedding model still gets loaded during the attempt.
-            log.info("Cognee warmup: embedding model loaded. No knowledge graph data to recall from yet (run !ingest when ready).")
-        else:
-            log.warning("Cognee warmup skipped (non-critical): %s", e)
+        await memory_in_background(_do)
+    except Exception:
+        pass
+    with _bg_lock:
+        if _bg_loop is not None:
+            _bg_loop.call_soon_threadsafe(_bg_loop.stop)
+            _bg_loop = None
+    log.info("Memory backends shut down.")
 
 
+# ---------------------------------------------------------------------------
+# Ingest hash helpers (unchanged)
+# ---------------------------------------------------------------------------
 def load_ingest_hashes() -> dict[str, str]:
     if HASH_RECORD_PATH.exists():
         try:

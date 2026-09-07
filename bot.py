@@ -7,7 +7,7 @@ import discord
 from discord.ext import commands
 from config import TOKEN, COMMAND_PREFIX
 from core.db import init_db, track_user, get_monitored_channels
-from core.memory import warmup_cognee
+from core.memory import warmup_memory
 from services.monitoring import monitoring_scheduler, emergency_monitoring
 from core.conversation import answer_question
 from config import SKILLS_DIRS
@@ -38,7 +38,7 @@ async def on_ready():
             except Exception as e:
                 log.exception(f"Failed to load cog {filename}: {e}")
 
-    asyncio.create_task(warmup_cognee())
+    asyncio.create_task(warmup_memory())
 
     if not monitoring_scheduler.is_running():
         monitoring_scheduler.start(bot)

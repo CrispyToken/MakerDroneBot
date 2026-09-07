@@ -8,7 +8,7 @@ def build_server_channel_list(guild: discord.Guild) -> str:
     for ch in guild.text_channels:
         perms = ch.permissions_for(guild.me)
         if perms.view_channel and perms.read_messages:
-            topic = f" — {ch.topic}" if ch.topic else ""
+            topic = f" - {ch.topic}" if ch.topic else ""
             channels.append(f"#{ch.name}{topic}")
     if not channels: return "(No accessible channels)"
     return "\n".join(f"- {c}" for c in channels)

@@ -36,7 +36,7 @@ class GeneralCog(commands.Cog):
 
         def format_command(command: commands.Command) -> str:
             desc = (command.help or command.brief or "No description.").strip().split("\n")[0]
-            return f"`{COMMAND_PREFIX}{command.name}` — {desc}"
+            return f"`{COMMAND_PREFIX}{command.name}` : {desc}"
 
         general_lines = []
         staff_lines = []
@@ -61,7 +61,7 @@ class GeneralCog(commands.Cog):
     async def ping(self, ctx: commands.Context):
         await ctx.reply(f"Pong. Gateway latency: {round(self.bot.latency * 1000)} ms")
 
-    @commands.command(name="status", help="Shows LLM backend and Cognee status.", usage="status")
+    @commands.command(name="status", help="Shows LLM backend and memory status.", usage="status")
     async def status_cmd(self, ctx: commands.Context):
         llm_ok = True;
         llm_error = None
@@ -75,13 +75,17 @@ class GeneralCog(commands.Cog):
         except Exception as e:
             llm_ok = False;
             llm_error = str(e)
-
         status = (
             f"LLM Base URL: `{LLM_BASE_URL}`\n"
             f"LLM reachable: `{'yes' if llm_ok else 'no'}`\n"
             f"Model ID: `{LLM_MODEL_ID}`\n"
+        )
+        engine = getattr(self.bot, "engine_manager", None)
+        if engine is not None:
+            status += f"Loaded model: `{engine.current_model_rel_path}`\n"
+        status += (
             f"Discord char limit: `{DISCORD_CHAR_LIMIT}`\n"
-            f"Cognee Datasets: `event_horizon`, `event_horizon_dynamic`"
+            f"Memory backend: `LightRAG` (workspaces: `knowledge`, `dynamic`)"
         )
         if not llm_ok and llm_error: status += f"\n`{llm_error[:300]}`"
         await ctx.reply(status)

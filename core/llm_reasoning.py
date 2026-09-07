@@ -1,26 +1,3 @@
-"""
-Scoped reasoning ("thinking") control for the local llama.cpp server.
-
-The Ling / Bailing-MoE model reasons by default. That's what we want for the
-Discord chat agent, but it makes Cognee's internal LLM operations (entity
-extraction, summarisation, graph construction, recall) painfully slow.
-
-llama.cpp's server honours a per-request ``chat_template_kwargs`` body field and
-the Bailing chat template's thinking switch is ``enable_thinking``.
-
-Design
-------
-* Reasoning is DISABLED by default: the OpenAI SDK is monkey-patched so every
-  chat-completion request gets
-  ``extra_body={"chat_template_kwargs": {"enable_thinking": False}}`` injected.
-* The chat agent OPTS BACK IN by setting the ``chat_reasoning_enabled``
-  contextvar (via :func:`chat_reasoning`) around ``agent.run``.
-* Cognee operations are scheduled onto the dedicated background loop in
-  ``core.memory`` with ``asyncio.run_coroutine_threadsafe``, which starts from a
-  fresh context, so they never see the opt-in flag and always run with reasoning
-  disabled. Same for the direct ``cognee.*`` awaits in ``cogs/staff.py``.
-"""
-
 import contextvars
 import logging
 from contextlib import asynccontextmanager
@@ -51,7 +28,7 @@ def _apply_reasoning_policy(kwargs: dict) -> dict:
     """Force the model's thinking switch explicitly on every request.
 
     Chat path (contextvar True)  -> enable_thinking: True
-    Everything else (Cognee etc) -> enable_thinking: False
+    Everything else (memory etc) -> enable_thinking: False
 
     Explicit on BOTH paths so behaviour never depends on the server-level
     --reasoning default, and the active switch is verifiable in traffic.

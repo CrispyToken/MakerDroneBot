@@ -1,7 +1,6 @@
 import sys
 import asyncio
 import logging
-
 from config import (
     TOKEN,
     MODELS_DIR,
@@ -9,7 +8,8 @@ from config import (
     LLAMA_PORT,
     LLAMA_SERVER_BIN,
     LLM_API_KEY,
-    LLM_MODEL_ID
+    LLM_DEFAULT_MODEL_PATH,
+    LLM_INGEST_MODEL_PATH,
 )
 
 logging.basicConfig(
@@ -29,12 +29,11 @@ async def main():
     install_reasoning_patch()
 
     engine_manager = None
-
     if LLM_SERVER_MANAGER == "llamacpp":
         from services.inference_engine import InferenceEngine
-
         engine_manager = InferenceEngine(
-            model_rel_path=LLM_MODEL_ID,
+            model_rel_path=LLM_DEFAULT_MODEL_PATH,
+            ingest_model_rel_path=LLM_INGEST_MODEL_PATH,
             port=LLAMA_PORT,
             bin_path=LLAMA_SERVER_BIN,
             api_key=LLM_API_KEY,
@@ -49,8 +48,13 @@ async def main():
 
     try:
         from bot import bot
+        # Expose the engine manager so commands (e.g. !ingest) can drive
+        # model swaps. None when running against an external server.
+        bot.engine_manager = engine_manager
         await bot.start(TOKEN)
     finally:
+        from core.memory import shutdown_memory
+        await shutdown_memory()
         if engine_manager:
             await engine_manager.stop()
 

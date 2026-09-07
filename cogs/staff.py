@@ -4,16 +4,16 @@ import asyncio
 import discord
 from discord.ext import commands
 import aiosqlite
-import cognee
 import logging
 from datetime import datetime, timezone
-from config import INGEST_DIR, INGEST_EXTENSIONS, DB_PATH, COMMAND_PREFIX
-from core.memory import load_ingest_hashes, save_ingest_hashes, compute_file_hash, cognee_in_background, \
-    release_cognee_lock
+from config import INGEST_DIR, INGEST_EXTENSIONS, DB_PATH, COMMAND_PREFIX, LLM_INGEST_MODEL_PATH
+from core.memory import load_ingest_hashes, save_ingest_hashes, compute_file_hash, ingest_document, forget_document
 from services.extractors import extract_text_from_file
 from utils.formatting import split_for_discord
 from utils.checks import is_staff
 from core.db import ensure_user_in_db, get_user_profile, get_monitored_channels, get_config, set_config
+from pathlib import Path
+from core.locks import llm_lock
 from services.monitoring import (
     set_interval_minutes, schedule_next_from_now, get_interval_minutes, get_next_run_at
 )
@@ -21,15 +21,21 @@ from services.monitoring import (
 log = logging.getLogger("rag-bot")
 
 
+def _dataset_name(rel_key: str) -> str:
+    """Stable LightRAG doc ID for an ingest/ file (must match across ingest + forget)."""
+    safe = str(Path(rel_key).with_suffix("")).replace(os.sep, "__").replace("/", "__").replace(" ", "_").lower()
+    return f"event_horizon__{safe}"
+
 class StaffCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
     @commands.command(name="ingest",
-                      help="Ingest supported files from the local `ingest/` folder into Cognee.",
+                      help="Ingest supported files from the local `ingest/` folder into memory.",
                       usage="ingest")
     @is_staff()
     async def ingest_folder(self, ctx: commands.Context):
+        # --- Phase 1: scan & hash (no LLM involved, no lock) --------------
         files = []
         for path in INGEST_DIR.rglob("*"):
             if not path.is_file(): continue
@@ -38,17 +44,14 @@ class StaffCog(commands.Cog):
             if path.suffix.lower() not in INGEST_EXTENSIONS: continue
             files.append(path)
         files.sort()
-
         if not files:
             supported = ", ".join(sorted(INGEST_EXTENSIONS))
             await ctx.reply(f"No supported files found in `{INGEST_DIR}`.\nSupported extensions: `{supported}`")
             return
-
         hash_records = await asyncio.to_thread(load_ingest_hashes)
         files_to_process = []
         files_skipped = []
         current_file_keys = set()
-
         for path in files:
             rel_path = path.relative_to(INGEST_DIR)
             file_key = str(rel_path)
@@ -64,100 +67,142 @@ class StaffCog(commands.Cog):
                 files_skipped.append((rel_path, "unchanged"))
                 continue
             files_to_process.append((path, rel_path, file_hash, stored_hash))
-
         deleted_keys = set(hash_records.keys()) - current_file_keys
-        deleted_results = []
-        for deleted_key in deleted_keys:
-            dataset_name = f"event_horizon__{deleted_key.replace(os.sep, '__').replace('/', '__').replace(' ', '_').lower()}"
-            try:
-                await cognee.forget(dataset_name=dataset_name)
-                deleted_results.append(f"- `{deleted_key}` → removed from Cognee")
-                del hash_records[deleted_key]
-            except Exception as e:
-                log.exception("Failed to forget deleted file %s", deleted_key)
-                deleted_results.append(f"- `{deleted_key}` → forget failed: `{e}`")
-
-        if not files_to_process and not deleted_results:
+        if not files_to_process and not deleted_keys:
             await ctx.reply(f"All {len(files)} file(s) unchanged since last ingest. Nothing to do.")
             return
-
+        engine_manager = getattr(self.bot, "engine_manager", None)
+        use_ingest_model = bool(engine_manager and LLM_INGEST_MODEL_PATH)
         status_parts = []
         if files_to_process: status_parts.append(f"**{len(files_to_process)}** file(s) to process")
         if files_skipped:
             unchanged_count = sum(1 for _, reason in files_skipped if reason == "unchanged")
             if unchanged_count: status_parts.append(f"**{unchanged_count}** unchanged (skipped)")
-        if deleted_results: status_parts.append(f"**{len(deleted_results)}** deleted")
-
+        if deleted_keys: status_parts.append(f"**{len(deleted_keys)}** deleted")
+        model_note = " Switching to the dedicated ingestion model for the graph pass." if use_ingest_model else ""
         await ctx.reply(
-            f"Starting ingestion: {', '.join(status_parts)}.\nThis may take a while. I will report back when finished.")
-
-        results = []
+            f"Starting ingestion: {', '.join(status_parts)}.\n"
+            f"Extracting document text first; chat and monitoring will be paused while the knowledge graph is updated.{model_note}\n"
+            "This may take a while. I will report back when finished.")
+        # --- Phase 2: text extraction (CPU-only, still no lock) -----------
+        # Docling parsing can take minutes on large PDFs; keeping it outside
+        # the lock avoids blacking out chat/monitoring before any LLM work.
+        ok_results = []
+        fail_results = []
+        extracted = []  # (rel_path, file_hash, old_hash, dataset_name, text)
         for path, rel_path, file_hash, old_hash in files_to_process:
-            safe_name = str(rel_path.with_suffix("")).replace(os.sep, "__").replace("/", "__").replace(" ", "_").lower()
-            dataset_name = f"event_horizon__{safe_name}"
+            dataset_name = _dataset_name(str(rel_path))
             try:
                 data = await asyncio.to_thread(path.read_bytes)
                 text = await asyncio.to_thread(extract_text_from_file, path.name, data)
-                if not text.strip():
-                    results.append(f"- `{rel_path}` → no readable text found")
-                    continue
-                if old_hash is not None:
-                    try:
-                        await cognee.forget(dataset_name=dataset_name)
-                    except Exception:
-                        log.warning("Could not forget old data for %s before re-ingest.", dataset_name)
-                await cognee.remember(text, dataset_name=dataset_name)
-                hash_records[str(rel_path)] = file_hash
-                results.append(f"- `{rel_path}` → stored as `{dataset_name}`")
-                log.info("Ingested and processed: %s", path.name)
             except Exception as e:
-                log.exception("Failed to process %s for Cognee", path)
-                results.append(f"- `{rel_path}` failed: `{e}`")
+                log.exception("Failed to process %s for memory", path)
+                fail_results.append(f"- `{rel_path}` failed: `{e}`")
+                continue
+            if not text.strip():
+                fail_results.append(f"- `{rel_path}` → no readable text found")
+                continue
+            extracted.append((rel_path, file_hash, old_hash, dataset_name, text))
+        if not extracted and not deleted_keys:
+            # Nothing survived extraction and nothing was deleted: no LLM work.
+            summary = "Ingest results:\n" + "\n".join(fail_results)
+            for part in split_for_discord(summary):
+                await ctx.reply(part)
+            return
+        # --- Phase 3: locked graph pass ------------------------------------
+        if llm_lock.locked():
+            await ctx.reply("Another task is still running. Waiting for it to finish before ingesting…")
+        restore_failed = False
+        await llm_lock.acquire()
+        try:
+            if use_ingest_model:
+                try:
+                    await engine_manager.load_ingest_model()
+                except Exception:
+                    log.exception("Failed to load ingest model; restoring default model.")
+                    try:
+                        await engine_manager.load_default_model()
+                    except Exception:
+                        log.exception("Failed to restore default model after ingest-model failure.")
+                        await ctx.reply(
+                            "Failed to load the ingestion model, and the default model also failed to reload. "
+                            "Check the logs; a bot restart may be required.")
+                        return
+                    await ctx.reply("Failed to load the ingestion model. Ingestion aborted.")
+                    return
+            try:
+                deleted_results = []
+                for deleted_key in deleted_keys:
+                    dataset_name = _dataset_name(deleted_key)
+                    try:
+                        await forget_document(dataset_name)
+                        deleted_results.append(f"- `{deleted_key}` → removed from memory.")
+                        del hash_records[deleted_key]
+                    except Exception as e:
+                        log.exception("Failed to forget deleted file %s", deleted_key)
+                        deleted_results.append(f"- `{deleted_key}` → forget failed: `{e}`")
+                for rel_path, file_hash, old_hash, dataset_name, text in extracted:
+                    try:
+                        if old_hash is not None:
+                            try:
+                                await forget_document(dataset_name)
+                            except Exception:
+                                log.warning("Could not forget old data for %s before re-ingest.", dataset_name)
+                        await ingest_document(text, doc_id=dataset_name)
+                        hash_records[str(rel_path)] = file_hash
+                        ok_results.append(f"- `{rel_path}` → stored as `{dataset_name}`")
+                        log.info("Ingested and processed: %s", rel_path)
+                    except Exception as e:
+                        log.exception("Failed to ingest %s", rel_path)
+                        fail_results.append(f"- `{rel_path}` failed: `{e}`")
+                await asyncio.to_thread(save_ingest_hashes, hash_records)
             finally:
-                await release_cognee_lock()
-
-        await asyncio.to_thread(save_ingest_hashes, hash_records)
-
+                if use_ingest_model:
+                    try:
+                        await engine_manager.load_default_model()
+                    except Exception:
+                        log.exception("Failed to restore default model after ingestion.")
+                        restore_failed = True
+        finally:
+            llm_lock.release()
+        # --- Phase 4: report ------------------------------------------------
+        for rel_path, reason in files_skipped:
+            if reason != "unchanged":
+                fail_results.append(f"- `{rel_path}` skipped ({reason})")
         all_results = []
-        if results:
+        if ok_results:
             all_results.append("**Processed:**")
-            all_results.extend(results)
-        if files_skipped:
-            unchanged = [f"- `{rp}`" for rp, reason in files_skipped if reason == "unchanged"]
-            if unchanged: all_results.append(f"\n**Skipped (unchanged):** {len(unchanged)} file(s)")
+            all_results.extend(ok_results)
+        if fail_results:
+            all_results.append("\n**Failed:**")
+            all_results.extend(fail_results)
+        unchanged_count = sum(1 for _, reason in files_skipped if reason == "unchanged")
+        if unchanged_count:
+            all_results.append(f"\n**Skipped (unchanged):** {unchanged_count} file(s)")
         if deleted_results:
             all_results.append("\n**Removed:**")
             all_results.extend(deleted_results)
-
         summary = "Ingest results:\n" + "\n".join(all_results)
         for part in split_for_discord(summary):
             await ctx.reply(part)
-
-    @commands.command(name="improve",
-                      help="Run Cognee's improve step to enrich and refine the knowledge graph.",
-                      usage="improve")
-    @is_staff()
-    async def improve_graph(self, ctx: commands.Context):
-        await ctx.reply(
-            "Starting knowledge graph improvement in the background.\nThis may take a while. I will report back when finished.")
-        try:
-            await cognee_in_background(cognee.improve)
-            await ctx.reply("Knowledge graph improvement complete.")
-            log.info("Cognee improve completed successfully.")
-        except Exception as e:
-            log.exception("Cognee improve failed")
-            await ctx.reply(f"Knowledge graph improvement failed:\n`{e}`")
-        finally:
-            await release_cognee_lock()
+        if use_ingest_model:
+            if restore_failed:
+                await ctx.reply(
+                    "Ingestion finished, but the default model FAILED to reload. "
+                    "Check the logs; a bot restart may be required.")
+            else:
+                await ctx.reply("Ingestion complete. Default model restored, chat and monitoring resumed.")
+        else:
+            await ctx.reply("Ingestion complete. Chat and monitoring resumed.")
 
     @commands.command(name="monitor",
                       help=(
                               f"Manage channel monitoring.\n"
-                              f"`{COMMAND_PREFIX}monitor list` — Show monitored channels, alert target, and schedule.\n"
-                              f"`{COMMAND_PREFIX}monitor add #channel \"reason\" [keywords]` — Start monitoring a channel.\n"
-                              f"`{COMMAND_PREFIX}monitor remove #channel` — Stop monitoring (scan position preserved).\n"
-                              f"`{COMMAND_PREFIX}monitor setchannel #channel` — Set where alerts are sent.\n"
-                              f"`{COMMAND_PREFIX}monitor setinterval <minutes>` — Set the scan interval (1–1440)."
+                              f"`{COMMAND_PREFIX}monitor list` Show monitored channels, alert target, and schedule.\n"
+                              f"`{COMMAND_PREFIX}monitor add #channel \"reason\" [keywords]` Start monitoring a channel.\n"
+                              f"`{COMMAND_PREFIX}monitor remove #channel` Stop monitoring (scan position preserved).\n"
+                              f"`{COMMAND_PREFIX}monitor setchannel #channel` Set where alerts are sent.\n"
+                              f"`{COMMAND_PREFIX}monitor setinterval <minutes>` Set the scan interval (1–1440)."
                       ),
                       usage="monitor <add | remove | list | setchannel | setinterval>")
     @is_staff()
@@ -183,9 +228,9 @@ class StaffCog(commands.Cog):
                 lines.append(f"\n**Alerts go to:** Not configured. Use `{COMMAND_PREFIX}monitor setchannel #channel`")
             if next_run:
                 lines.append(
-                    f"**Schedule:** every {interval}m — next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')}")
+                    f"**Schedule:** every {interval}m. Next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')}")
             else:
-                lines.append(f"**Schedule:** every {interval}m — checkpoint not yet created")
+                lines.append(f"**Schedule:** every {interval}m. Checkpoint not yet created")
             for part in split_for_discord("\n".join(lines)):
                 await ctx.reply(part)
 
