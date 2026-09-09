@@ -82,17 +82,42 @@ def load_monitoring_prompt() -> str:
 
 
 async def fetch_new_messages_for_channel(channel: discord.TextChannel, last_message_id: int) -> list[discord.Message]:
-    messages = []
+    # Fetch a larger batch (3x) from the API to account for bot/empty messages
+    # being filtered out, ensuring we get a full window of eligible messages.
+    fetch_limit = MONITOR_MAX_MESSAGES_PER_CHANNEL * 3
+    raw_messages = []
     try:
-        after = discord.Object(id=last_message_id) if last_message_id > 0 else None
-        async for msg in channel.history(limit=MONITOR_MAX_MESSAGES_PER_CHANNEL, after=after, oldest_first=True):
-            if msg.author.bot: continue
-            # Keep messages that have text OR attachments (images are evaluated separately).
-            if not msg.clean_content and not msg.attachments: continue
-            messages.append(msg)
+        # Fetch newest first to easily grab the latest context
+        async for msg in channel.history(limit=fetch_limit, oldest_first=False):
+            if msg.author.bot:
+                continue
+            if not msg.clean_content and not msg.attachments:
+                continue
+            raw_messages.append(msg)
+            if len(raw_messages) >= MONITOR_MAX_MESSAGES_PER_CHANNEL:
+                break
     except Exception:
         log.exception("Failed to fetch history for channel %s", channel.id)
-    return messages
+        return []
+
+    if not raw_messages:
+        return []
+
+    # raw_messages is newest-first. Reverse to chronological order.
+    raw_messages.reverse()
+
+    # Apply watermark logic.
+    if last_message_id == 0:
+        return raw_messages
+
+    window_oldest_id = raw_messages[0].id
+
+    if last_message_id < window_oldest_id:
+        # Watermark is older than our window. Skip the ancient backlog, evaluate the whole window.
+        return raw_messages
+    else:
+        # Watermark is within the window. Filter to strictly newer messages.
+        return [msg for msg in raw_messages if msg.id > last_message_id]
 
 
 async def get_latest_message_id(channel: discord.TextChannel) -> int | None:
@@ -235,9 +260,10 @@ async def _persist_scan_positions(scan_results, baseline_updates) -> None:
     """Persist per-channel scan positions after a successful evaluation."""
     async with aiosqlite.connect(DB_PATH) as db:
         for channel, mc, prepared in scan_results:
+            new_id = prepared[-1][0].id if prepared else mc["last_message_id"]
             await db.execute(
                 "UPDATE monitored_channels SET last_message_id = ? WHERE channel_id = ?",
-                (prepared[-1][0].id, mc["channel_id"]),
+                (new_id, mc["channel_id"]),
             )
         for channel_id, latest_id in baseline_updates.items():
             await db.execute(
