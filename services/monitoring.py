@@ -148,23 +148,33 @@ async def collect_message_attachments(msg: discord.Message, budget: list[int]) -
 
 
 def build_channel_section(channel: discord.TextChannel, mc: dict, prepared_messages: list,
-                          index: int, total: int) -> list[dict]:
+                          index: int, total: int,
+                          emergency_trigger_author: str | None = None) -> list[dict]:
     """Assemble one channel's messages into multimodal content parts.
 
     Each message contributes a text line (timestamp, author, content) followed
     immediately by that message's image parts. This adjacency is what lets the
     model attribute every image to its author and channel.
+
+    emergency_trigger_author, when set, marks this section as the channel
+    where a keyword trigger fired and names the triggering message's author.
     """
-    header = [
+    header = []
+    if emergency_trigger_author is not None:
+        header.append(f"=== EMERGENCY MONITORING TRIGGERED IN #{channel.name} ===")
+    header.extend([
         f"=== MONITORED CHANNEL {index} OF {total}: #{channel.name} ===",
         f"Channel topic: {channel.topic if channel.topic else '(No topic set)'}",
         f"Monitoring reason: {mc['reason']}",
-    ]
+    ])
     if mc["keywords"]:
         header.append(f"Keywords to watch: {mc['keywords']}")
+    if emergency_trigger_author is not None:
+        header.append(f"Trigger: A keyword was detected in a message by {emergency_trigger_author}.")
     header.append(f"{len(prepared_messages)} new message(s) since the last scan, oldest first:")
 
     parts = [{"type": "text", "text": "\n".join(header)}]
+
     for msg, image_blocks, markers in prepared_messages:
         timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M UTC")
         text_content = msg.clean_content or "(no text content)"
@@ -172,7 +182,69 @@ def build_channel_section(channel: discord.TextChannel, mc: dict, prepared_messa
         for marker in markers:
             parts.append({"type": "text", "text": f"[{timestamp}] {marker}"})
         parts.extend(image_blocks)
+
     return parts
+
+async def _scan_monitored_channels(bot: discord.Client, monitored: list[dict]):
+    """Shared unseen-message scan for scheduled and emergency runs.
+
+    Pulls only messages newer than each channel's stored watermark and
+    prepares them (text + image parts, shared cycle image budget).
+
+    Returns (scan_results, baseline_updates):
+      scan_results    : list of (channel, config, prepared_messages)
+      baseline_updates: channel_id -> latest message id, for first scans
+                        of channels with no eligible messages
+    """
+    image_budget = [MONITOR_MAX_IMAGES_PER_CYCLE]
+    scan_results = []      # (channel, config, prepared_messages)
+    baseline_updates = {}  # channel_id -> latest message id (first-scan baseline)
+
+    for mc in monitored:
+        channel = bot.get_channel(mc["channel_id"])
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(mc["channel_id"])
+            except Exception:
+                log.warning("Monitoring: Could not access channel %s", mc["channel_id"])
+                continue
+
+        new_messages = await fetch_new_messages_for_channel(channel, mc["last_message_id"])
+
+        if not new_messages:
+            # First scan of a channel with nothing eligible: set a baseline so we
+            # don't re-pull the full history window on every subsequent cycle.
+            if mc["last_message_id"] == 0:
+                latest_id = await get_latest_message_id(channel)
+                if latest_id:
+                    baseline_updates[mc["channel_id"]] = latest_id
+                    log.info("Monitoring: First scan of #%s found no eligible messages; baseline set to %s.",
+                             channel.name, latest_id)
+            continue
+
+        prepared = []
+        for msg in new_messages:
+            blocks, markers = await collect_message_attachments(msg, image_budget)
+            prepared.append((msg, blocks, markers))
+        scan_results.append((channel, mc, prepared))
+
+    return scan_results, baseline_updates
+
+
+async def _persist_scan_positions(scan_results, baseline_updates) -> None:
+    """Persist per-channel scan positions after a successful evaluation."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        for channel, mc, prepared in scan_results:
+            await db.execute(
+                "UPDATE monitored_channels SET last_message_id = ? WHERE channel_id = ?",
+                (prepared[-1][0].id, mc["channel_id"]),
+            )
+        for channel_id, latest_id in baseline_updates.items():
+            await db.execute(
+                "UPDATE monitored_channels SET last_message_id = ? WHERE channel_id = ?",
+                (latest_id, channel_id),
+            )
+        await db.commit()
 
 async def run_monitoring_evaluation(bot: discord.Client, sections: list[list[dict]], is_emergency: bool = False):
     monitoring_prompt = load_monitoring_prompt()
@@ -251,36 +323,7 @@ async def run_monitoring_cycle(bot: discord.Client) -> bool:
 
     async with llm_lock:
         try:
-            image_budget = [MONITOR_MAX_IMAGES_PER_CYCLE]
-            scan_results = []      # (channel, config, prepared_messages)
-            baseline_updates = {}  # channel_id -> latest message id (first-scan baseline)
-
-            for mc in monitored:
-                channel = bot.get_channel(mc["channel_id"])
-                if channel is None:
-                    try:
-                        channel = await bot.fetch_channel(mc["channel_id"])
-                    except Exception:
-                        log.warning("Monitoring: Could not access channel %s", mc["channel_id"])
-                        continue
-
-                new_messages = await fetch_new_messages_for_channel(channel, mc["last_message_id"])
-                if not new_messages:
-                    # First scan of a channel with nothing eligible: set a baseline so we
-                    # don't re-pull the full history window on every subsequent cycle.
-                    if mc["last_message_id"] == 0:
-                        latest_id = await get_latest_message_id(channel)
-                        if latest_id:
-                            baseline_updates[mc["channel_id"]] = latest_id
-                            log.info("Monitoring: First scan of #%s found no eligible messages; baseline set to %s.",
-                                     channel.name, latest_id)
-                    continue
-
-                prepared = []
-                for msg in new_messages:
-                    blocks, markers = await collect_message_attachments(msg, image_budget)
-                    prepared.append((msg, blocks, markers))
-                scan_results.append((channel, mc, prepared))
+            scan_results, baseline_updates = await _scan_monitored_channels(bot, monitored)
 
             # LLM is only called when at least one channel has new messages.
             if scan_results:
@@ -292,18 +335,7 @@ async def run_monitoring_cycle(bot: discord.Client) -> bool:
                 await run_monitoring_evaluation(bot, sections, is_emergency=False)
 
             # Persist scan positions only after a successful pass.
-            async with aiosqlite.connect(DB_PATH) as db:
-                for channel, mc, prepared in scan_results:
-                    await db.execute(
-                        "UPDATE monitored_channels SET last_message_id = ? WHERE channel_id = ?",
-                        (prepared[-1][0].id, mc["channel_id"]),
-                    )
-                for channel_id, latest_id in baseline_updates.items():
-                    await db.execute(
-                        "UPDATE monitored_channels SET last_message_id = ? WHERE channel_id = ?",
-                        (latest_id, channel_id),
-                    )
-                await db.commit()
+            await _persist_scan_positions(scan_results, baseline_updates)
         except Exception as e:
             log.exception("Monitoring cycle failed: %s", e)
 
@@ -341,48 +373,47 @@ async def monitoring_scheduler(bot: discord.Client):
 
 async def emergency_monitoring(bot: discord.Client, channel: discord.TextChannel, channel_config: dict,
                                trigger_message: discord.Message):
+    """Keyword-triggered immediate scan.
+
+    Scans only the triggered channel, pulling only messages newer than its
+    stored watermark, and persists the new scan position after the
+    evaluation. This guarantees an already-evaluated message is never
+    reported twice by later triggers.
+    """
     if llm_lock.locked():
         log.info("Emergency monitoring: skipping, LLM is busy with another task.")
         return
 
     async with llm_lock:
         try:
-            messages = []
-            async for msg in channel.history(limit=MONITOR_MAX_MESSAGES_PER_CHANNEL, oldest_first=True):
-                if msg.author.bot: continue
-                if not msg.clean_content and not msg.attachments: continue
-                messages.append(msg)
-
-            if not messages:
+            # Emergency is confined to the triggered channel. Re-fetch its
+            # row: a scheduled cycle may have advanced the watermark between
+            # the keyword trigger and lock acquisition.
+            monitored = await get_monitored_channels()
+            mc = next((m for m in monitored if m["channel_id"] == channel.id), None)
+            if mc is None:
                 return
 
-            image_budget = [MONITOR_MAX_IMAGES_PER_CYCLE]
-            header = [
-                f"=== EMERGENCY MONITORING: #{channel.name} ===",
-                f"Channel topic: {channel.topic if channel.topic else '(No topic set)'}",
-                f"Monitoring reason: {channel_config['reason']}",
+            scan_results, baseline_updates = await _scan_monitored_channels(bot, [mc])
+
+            if not scan_results:
+                # Race: a scheduled cycle already consumed everything new,
+                # or only ineligible messages arrived. Nothing to evaluate.
+                log.info("Emergency monitoring: no unseen eligible messages in #%s; nothing to evaluate.",
+                         channel.name)
+                await _persist_scan_positions(scan_results, baseline_updates)
+                return
+
+            sections = [
+                build_channel_section(
+                    ch, cfg, prepared, 1, 1,
+                    emergency_trigger_author=trigger_message.author.display_name,
+                )
+                for ch, cfg, prepared in scan_results
             ]
-            if channel_config["keywords"]:
-                header.append(f"Keywords to watch: {channel_config['keywords']}")
-            header.append(f"Trigger: A keyword was detected in a message by {trigger_message.author.display_name}.")
-            header.append(f"{len(messages)} recent message(s), oldest first:")
+            await run_monitoring_evaluation(bot, sections, is_emergency=True)
 
-            section = [{"type": "text", "text": "\n".join(header)}]
-            for msg in messages:
-                blocks, markers = await collect_message_attachments(msg, image_budget)
-                timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M UTC")
-                text_content = msg.clean_content or "(no text content)"
-                section.append({"type": "text", "text": f"[{timestamp}] {msg.author.display_name}: {text_content}"})
-                for marker in markers:
-                    section.append({"type": "text", "text": f"[{timestamp}] {marker}"})
-                section.extend(blocks)
-
-            await run_monitoring_evaluation(bot, [section], is_emergency=True)
-
-            if messages:
-                async with aiosqlite.connect(DB_PATH) as db:
-                    await db.execute("UPDATE monitored_channels SET last_message_id = ? WHERE channel_id = ?",
-                                     (messages[-1].id, channel.id))
-                    await db.commit()
+            # Persist scan positions only after a successful pass.
+            await _persist_scan_positions(scan_results, baseline_updates)
         except Exception as e:
             log.exception("Emergency monitoring failed: %s", e)

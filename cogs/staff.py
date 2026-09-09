@@ -226,8 +226,9 @@ class StaffCog(commands.Cog):
             else:
                 lines.append(f"\n**Alerts go to:** Not configured. Use `{COMMAND_PREFIX}monitor setchannel #channel`")
             if next_run:
+                next_ts = int(next_run.timestamp())
                 lines.append(
-                    f"**Schedule:** every {interval}m. Next scan at {next_run.strftime('%Y-%m-%d %H:%M UTC')}")
+                    f"**Schedule:** every {interval}m. Next scan at <t:{next_ts}:F> (<t:{next_ts}:R>)")
             else:
                 lines.append(f"**Schedule:** every {interval}m. Checkpoint not yet created")
             for part in split_for_discord("\n".join(lines)):
@@ -328,8 +329,15 @@ class StaffCog(commands.Cog):
         embed = discord.Embed(title=f"Profile: {profile['display_name']}", color=discord.Color.blue())
         embed.add_field(name="Username", value=f"@{profile['username']}", inline=True)
         embed.add_field(name="Roles", value=profile['roles'] or "None", inline=False)
-        embed.add_field(name="Joined Server", value=profile['join_date'][:10] if profile['join_date'] else "Unknown",
-                        inline=True)
+        join_val = "Unknown"
+        if profile['join_date']:
+            try:
+                jd = datetime.fromisoformat(profile['join_date'])
+                join_ts = int(jd.timestamp())
+                join_val = f"<t:{join_ts}:d> (<t:{join_ts}:R>)"
+            except Exception:
+                join_val = profile['join_date'][:10]
+        embed.add_field(name="Joined Server", value=join_val, inline=True)
         embed.add_field(name="Messages Seen", value=str(profile['message_count']), inline=True)
         embed.add_field(name="Staff Notes", value=profile['staff_notes'] or "None", inline=False)
         await ctx.reply(embed=embed)
@@ -338,8 +346,8 @@ class StaffCog(commands.Cog):
     @is_staff()
     async def add_note(self, ctx: commands.Context, member: discord.Member, *, note: str):
         await ensure_user_in_db(member)
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        formatted_note = f"[{timestamp} by {ctx.author.display_name}] {note}"
+        ts = int(datetime.now(timezone.utc).timestamp())
+        formatted_note = f"[<t:{ts}:d> by {ctx.author.display_name}] {note}"
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("""
                              UPDATE user_profiles
