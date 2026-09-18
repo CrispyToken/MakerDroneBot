@@ -45,6 +45,7 @@ raw_model = os.getenv("LLM_MODEL", "local-model")
 LLM_DEFAULT_MODEL_PATH = _strip_vendor_prefix(raw_model)
 
 CONVERSATION_MAX_HISTORY = int(os.getenv("CONVERSATION_MAX_HISTORY", "15"))
+CONVERSATION_MAX_CHAIN_EXTRA = int(os.getenv("CONVERSATION_MAX_CHAIN_EXTRA", "20"))
 
 # Optional dedicated ingest model. Empty = ingest runs on the default model.
 raw_ingest_model = os.getenv("LLM_INGEST_MODEL", "")

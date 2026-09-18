@@ -108,10 +108,11 @@ async def answer_question(bot: discord.Client, message: discord.Message, questio
                                                               max_history=CONVERSATION_MAX_HISTORY)
         history_text = ""
         if conversation_history:
-            lines = [
-                f"{bot.user.display_name}: {msg['content']}" if msg["role"] == "assistant" else msg["content"]
-                for msg in conversation_history]
-            history_text = "[Recent Conversation History]\n" + "\n".join(lines) + "\n[End of History]\n\n"
+            history_text = (
+                    "[Recent Conversation History — chronological, oldest to newest, timestamps UTC]\n"
+                    + "\n".join(conversation_history)
+                    + "\n[End of History]\n\n"
+            )
 
         if images:
             from pydantic_ai import ImageUrl
