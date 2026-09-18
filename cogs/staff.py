@@ -13,9 +13,10 @@ from utils.formatting import split_for_discord
 from utils.checks import is_staff
 from core.db import ensure_user_in_db, get_user_profile, get_monitored_channels, get_config, set_config
 from pathlib import Path
-from core.locks import llm_lock
+from core.locks import llm_lock, track_llm_task, interrupt_active_llm
 from services.monitoring import (
-    set_interval_minutes, schedule_next_from_now, get_interval_minutes, get_next_run_at
+    set_interval_minutes, schedule_next_from_now, get_interval_minutes, get_next_run_at,
+    run_monitoring_cycle
 )
 
 log = logging.getLogger("rag-bot")
@@ -112,6 +113,8 @@ class StaffCog(commands.Cog):
         if llm_lock.locked():
             await ctx.reply("Another task is still running. Waiting for it to finish before ingesting…")
         restore_failed = False
+        interrupted = False
+        deleted_results = []
         await llm_lock.acquire()
         try:
             if use_ingest_model:
@@ -130,31 +133,35 @@ class StaffCog(commands.Cog):
                     await ctx.reply("Failed to load the ingestion model. Ingestion aborted.")
                     return
             try:
-                deleted_results = []
-                for deleted_key in deleted_keys:
-                    dataset_name = _dataset_name(deleted_key)
-                    try:
-                        await forget_document(dataset_name)
-                        deleted_results.append(f"- `{deleted_key}` → removed from memory.")
-                        del hash_records[deleted_key]
-                    except Exception as e:
-                        log.exception("Failed to forget deleted file %s", deleted_key)
-                        deleted_results.append(f"- `{deleted_key}` → forget failed: `{e}`")
-                for rel_path, file_hash, old_hash, dataset_name, text in extracted:
-                    try:
-                        if old_hash is not None:
-                            try:
-                                await forget_document(dataset_name)
-                            except Exception:
-                                log.warning("Could not forget old data for %s before re-ingest.", dataset_name)
-                        await ingest_document(text, doc_id=dataset_name)
-                        hash_records[str(rel_path)] = file_hash
-                        ok_results.append(f"- `{rel_path}` → stored as `{dataset_name}`")
-                        log.info("Ingested and processed: %s", rel_path)
-                    except Exception as e:
-                        log.exception("Failed to ingest %s", rel_path)
-                        fail_results.append(f"- `{rel_path}` failed: `{e}`")
-                await asyncio.to_thread(save_ingest_hashes, hash_records)
+                async with track_llm_task("ingest"):
+                    for deleted_key in deleted_keys:
+                        dataset_name = _dataset_name(deleted_key)
+                        try:
+                            await forget_document(dataset_name)
+                            deleted_results.append(f"- `{deleted_key}` → removed from memory.")
+                            del hash_records[deleted_key]
+                            await asyncio.to_thread(save_ingest_hashes, hash_records)
+                        except Exception as e:
+                            log.exception("Failed to forget deleted file %s", deleted_key)
+                            deleted_results.append(f"- `{deleted_key}` → forget failed: `{e}`")
+                    for rel_path, file_hash, old_hash, dataset_name, text in extracted:
+                        try:
+                            if old_hash is not None:
+                                try:
+                                    await forget_document(dataset_name)
+                                except Exception:
+                                    log.warning("Could not forget old data for %s before re-ingest.", dataset_name)
+                            await ingest_document(text, doc_id=dataset_name)
+                            hash_records[str(rel_path)] = file_hash
+                            await asyncio.to_thread(save_ingest_hashes, hash_records)
+                            ok_results.append(f"- `{rel_path}` → stored as `{dataset_name}`")
+                            log.info("Ingested and processed: %s", rel_path)
+                        except Exception as e:
+                            log.exception("Failed to ingest %s", rel_path)
+                            fail_results.append(f"- `{rel_path}` failed: `{e}`")
+            except asyncio.CancelledError:
+                log.warning("Ingestion interrupted by staff command. Restoring the default model.")
+                interrupted = True
             finally:
                 if use_ingest_model:
                     try:
@@ -169,6 +176,9 @@ class StaffCog(commands.Cog):
             if reason != "unchanged":
                 fail_results.append(f"- `{rel_path}` skipped ({reason})")
         all_results = []
+        if interrupted:
+            all_results.append("**Interrupted:** the run was canceled by staff. Completed files are saved; "
+                               "remaining files will be processed on the next ingest.")
         if ok_results:
             all_results.append("**Processed:**")
             all_results.extend(ok_results)
@@ -197,6 +207,7 @@ class StaffCog(commands.Cog):
     @commands.command(name="monitor",
                       help=(
                               f"Manage channel monitoring.\n"
+                              f"`{COMMAND_PREFIX}monitor now` Run a monitoring cycle immediately.\n"
                               f"`{COMMAND_PREFIX}monitor list` Show monitored channels, alert target, and schedule.\n"
                               f"`{COMMAND_PREFIX}monitor add #channel \"reason\" [keywords]` Start monitoring a channel.\n"
                               f"`{COMMAND_PREFIX}monitor remove #channel` Stop monitoring (scan position preserved).\n"
@@ -314,6 +325,18 @@ class StaffCog(commands.Cog):
             await schedule_next_from_now()
             await ctx.reply(f"Monitoring interval set to **{minutes}** minutes. Next scan checkpoint has been reset.")
 
+        elif action == "now":
+            if llm_lock.locked():
+                await ctx.reply("I'm currently processing another task. Please try again in a minute.")
+                return
+            await ctx.reply("Starting a manual monitoring cycle…")
+            ran = await run_monitoring_cycle(self.bot)
+            if ran:
+                await schedule_next_from_now()
+                await ctx.reply("Manual monitoring cycle finished. The next scheduled scan checkpoint has been reset.")
+            else:
+                await ctx.reply("The monitoring cycle was skipped because the LLM became busy.")
+
         else:
             await ctx.reply(
                 f"Unknown action. Use: `{COMMAND_PREFIX}monitor add`, `{COMMAND_PREFIX}monitor remove`, `{COMMAND_PREFIX}monitor list`, `{COMMAND_PREFIX}monitor setchannel`, or `{COMMAND_PREFIX}monitor setinterval`")
@@ -364,6 +387,18 @@ class StaffCog(commands.Cog):
             await db.execute("UPDATE user_profiles SET staff_notes = '' WHERE user_id = ?", (member.id,))
             await db.commit()
         await ctx.reply(f"Cleared all notes for {member.display_name}.")
+
+    @commands.command(name="interrupt",
+                      help="Cancel the currently running LLM task (chat, monitoring, or ingest). "
+                           "The inference server and loaded model are unaffected.",
+                      usage="interrupt")
+    @is_staff()
+    async def interrupt_cmd(self, ctx: commands.Context):
+        label = interrupt_active_llm()
+        if label is None:
+            await ctx.reply("No active LLM task to interrupt.")
+            return
+        await ctx.reply(f"Interrupting the active LLM task ({label}).")
 
 
 async def setup(bot):

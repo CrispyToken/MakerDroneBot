@@ -11,7 +11,8 @@ import re
 import services.skills as skills_module
 from core.llm_reasoning import chat_reasoning
 from core.console import print_user_line
-from core.locks import llm_lock
+from core.locks import llm_lock, track_llm_task
+from config import CONVERSATION_MAX_HISTORY
 
 log = logging.getLogger("rag-bot")
 
@@ -104,7 +105,7 @@ async def answer_question(bot: discord.Client, message: discord.Message, questio
             prompt_text = f"{message.author.display_name}: " + prompt_text
 
         conversation_history = await get_conversation_context(message, bot.user.id, bot.user.display_name,
-                                                              max_history=15)
+                                                              max_history=CONVERSATION_MAX_HISTORY)
         history_text = ""
         if conversation_history:
             lines = [
@@ -135,12 +136,16 @@ async def answer_question(bot: discord.Client, message: discord.Message, questio
             await message.reply("I'm currently processing another task. Please try again in a minute.")
             return
         try:
-            async with chat_reasoning():
-                result = await agent.run(user_content, deps=deps)
+            async with track_llm_task("chat"):
+                async with chat_reasoning():
+                    result = await agent.run(user_content, deps=deps)
+        except asyncio.CancelledError:
+            log.info("Chat turn interrupted by staff command.")
+            return
         finally:
             llm_lock.release()
-
         await send_final_answer(message, result.output)
+
     except RuntimeError as e:
         log.exception("Model/request error")
         await message.reply(f"Model/request error:\n`{e}`")

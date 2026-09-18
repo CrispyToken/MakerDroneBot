@@ -28,6 +28,7 @@ DYNAMIC_WORKSPACE = "dynamic"
 # ---------------------------------------------------------------------------
 _bg_loop: asyncio.AbstractEventLoop | None = None
 _bg_lock = threading.Lock()
+_bg_active_task: asyncio.Task | None = None
 
 
 def _get_bg_loop() -> asyncio.AbstractEventLoop:
@@ -47,8 +48,25 @@ async def memory_in_background(coro_func, *args, **kwargs):
     """Run a coroutine function on the persistent background loop and await
     its result without blocking the Discord gateway loop."""
     loop = _get_bg_loop()
-    future = asyncio.run_coroutine_threadsafe(coro_func(*args, **kwargs), loop)
-    return await asyncio.wrap_future(future)
+
+    async def _wrapper():
+        global _bg_active_task
+        _bg_active_task = asyncio.current_task()
+        try:
+            return await coro_func(*args, **kwargs)
+        finally:
+            _bg_active_task = None
+
+    future = asyncio.run_coroutine_threadsafe(_wrapper(), loop)
+    try:
+        return await asyncio.wrap_future(future)
+    except asyncio.CancelledError:
+        bg_loop = _bg_loop
+        if bg_loop is not None:
+            bg_loop.call_soon_threadsafe(
+                lambda: _bg_active_task.cancel() if _bg_active_task is not None else None
+            )
+        raise
 
 
 # ---------------------------------------------------------------------------

@@ -179,7 +179,7 @@ class InferenceEngine:
         self._set_model(model_rel_path)
         try:
             await self.start()
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             log.exception(f"InferenceEngine: '{model_rel_path}' failed to load; rolling back to '{previous}'.")
             await self.stop()
             self._set_model(previous)

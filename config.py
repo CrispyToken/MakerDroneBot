@@ -44,6 +44,8 @@ def _strip_vendor_prefix(raw: str) -> str:
 raw_model = os.getenv("LLM_MODEL", "local-model")
 LLM_DEFAULT_MODEL_PATH = _strip_vendor_prefix(raw_model)
 
+CONVERSATION_MAX_HISTORY = int(os.getenv("CONVERSATION_MAX_HISTORY", "15"))
+
 # Optional dedicated ingest model. Empty = ingest runs on the default model.
 raw_ingest_model = os.getenv("LLM_INGEST_MODEL", "")
 LLM_INGEST_MODEL_PATH = _strip_vendor_prefix(raw_ingest_model) if raw_ingest_model.strip() else ""

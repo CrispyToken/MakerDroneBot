@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from discord.ext import tasks
 import aiosqlite
-from core.locks import llm_lock
+from core.locks import llm_lock, track_llm_task
 
 from config import (
     MONITOR_PROMPT_FILE, SERVER_RULES_FILE, MONITOR_INTERVAL_MINUTES,
@@ -237,8 +237,6 @@ async def _scan_monitored_channels(bot: discord.Client, monitored: list[dict]):
         new_messages = await fetch_new_messages_for_channel(channel, mc["last_message_id"])
 
         if not new_messages:
-            # First scan of a channel with nothing eligible: set a baseline so we
-            # don't re-pull the full history window on every subsequent cycle.
             if mc["last_message_id"] == 0:
                 latest_id = await get_latest_message_id(channel)
                 if latest_id:
@@ -349,19 +347,21 @@ async def run_monitoring_cycle(bot: discord.Client) -> bool:
 
     async with llm_lock:
         try:
-            scan_results, baseline_updates = await _scan_monitored_channels(bot, monitored)
-
-            # LLM is only called when at least one channel has new messages.
-            if scan_results:
-                total = len(scan_results)
-                sections = [
-                    build_channel_section(channel, mc, prepared, index, total)
-                    for index, (channel, mc, prepared) in enumerate(scan_results, start=1)
-                ]
-                await run_monitoring_evaluation(bot, sections, is_emergency=False)
-
-            # Persist scan positions only after a successful pass.
-            await _persist_scan_positions(scan_results, baseline_updates)
+            async with track_llm_task("monitoring cycle"):
+                scan_results, baseline_updates = await _scan_monitored_channels(bot, monitored)
+                # LLM is only called when at least one channel has new messages.
+                if scan_results:
+                    total = len(scan_results)
+                    sections = [
+                        build_channel_section(channel, mc, prepared, index, total)
+                        for index, (channel, mc, prepared) in enumerate(scan_results, start=1)
+                    ]
+                    await run_monitoring_evaluation(bot, sections, is_emergency=False)
+                # Persist scan positions only after a successful pass.
+                await _persist_scan_positions(scan_results, baseline_updates)
+        except asyncio.CancelledError:
+            log.warning("Monitoring cycle interrupted by staff command; scan position not advanced.")
+            return False
         except Exception as e:
             log.exception("Monitoring cycle failed: %s", e)
 
@@ -412,34 +412,33 @@ async def emergency_monitoring(bot: discord.Client, channel: discord.TextChannel
 
     async with llm_lock:
         try:
-            # Emergency is confined to the triggered channel. Re-fetch its
-            # row: a scheduled cycle may have advanced the watermark between
-            # the keyword trigger and lock acquisition.
-            monitored = await get_monitored_channels()
-            mc = next((m for m in monitored if m["channel_id"] == channel.id), None)
-            if mc is None:
-                return
+            async with track_llm_task("emergency monitoring"):
+                monitored = await get_monitored_channels()
+                mc = next((m for m in monitored if m["channel_id"] == channel.id), None)
+                if mc is None:
+                    return
 
-            scan_results, baseline_updates = await _scan_monitored_channels(bot, [mc])
+                scan_results, baseline_updates = await _scan_monitored_channels(bot, [mc])
 
-            if not scan_results:
-                # Race: a scheduled cycle already consumed everything new,
-                # or only ineligible messages arrived. Nothing to evaluate.
-                log.info("Emergency monitoring: no unseen eligible messages in #%s; nothing to evaluate.",
-                         channel.name)
+                if not scan_results:
+                    log.info("Emergency monitoring: no unseen eligible messages in #%s; nothing to evaluate.",
+                             channel.name)
+                    await _persist_scan_positions(scan_results, baseline_updates)
+                    return
+
+                sections = [
+                    build_channel_section(
+                        ch, cfg, prepared, 1, 1,
+                        emergency_trigger_author=trigger_message.author.display_name,
+                    )
+                    for ch, cfg, prepared in scan_results
+                ]
+                await run_monitoring_evaluation(bot, sections, is_emergency=True)
+
+                # Persist scan positions only after a successful pass.
                 await _persist_scan_positions(scan_results, baseline_updates)
-                return
-
-            sections = [
-                build_channel_section(
-                    ch, cfg, prepared, 1, 1,
-                    emergency_trigger_author=trigger_message.author.display_name,
-                )
-                for ch, cfg, prepared in scan_results
-            ]
-            await run_monitoring_evaluation(bot, sections, is_emergency=True)
-
-            # Persist scan positions only after a successful pass.
-            await _persist_scan_positions(scan_results, baseline_updates)
+        except asyncio.CancelledError:
+            log.warning("Emergency monitoring interrupted by staff command; scan position not advanced.")
+            return
         except Exception as e:
             log.exception("Emergency monitoring failed: %s", e)
