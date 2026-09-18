@@ -11,7 +11,10 @@ from core.memory import load_ingest_hashes, save_ingest_hashes, compute_file_has
 from services.extractors import extract_text_from_file
 from utils.formatting import split_for_discord
 from utils.checks import is_staff
-from core.db import ensure_user_in_db, get_user_profile, get_monitored_channels, get_config, set_config
+from core.db import (
+    ensure_user_in_db, get_user_profile, get_monitored_channels, get_config, set_config,
+    get_permitted_channels, add_permitted_channel, remove_permitted_channel
+)
 from pathlib import Path
 from core.locks import llm_lock, track_llm_task, interrupt_active_llm
 from services.monitoring import (
@@ -340,6 +343,55 @@ class StaffCog(commands.Cog):
         else:
             await ctx.reply(
                 f"Unknown action. Use: `{COMMAND_PREFIX}monitor add`, `{COMMAND_PREFIX}monitor remove`, `{COMMAND_PREFIX}monitor list`, `{COMMAND_PREFIX}monitor setchannel`, or `{COMMAND_PREFIX}monitor setinterval`")
+
+    @commands.command(name="talk",
+                      help=(
+                              f"Control which channels the bot is allowed to speak in.\n"
+                              f"`{COMMAND_PREFIX}talk add #channel` Grant speaking permission.\n"
+                              f"`{COMMAND_PREFIX}talk remove #channel` Revoke speaking permission.\n"
+                              f"`{COMMAND_PREFIX}talk list` Show all permitted channels."
+                      ),
+                      usage="talk <add | remove | list>")
+    @is_staff()
+    async def talk_cmd(self, ctx: commands.Context, action: str = "list", *, args: str = ""):
+        action = action.lower()
+        if action == "list":
+            permitted = await get_permitted_channels()
+            if not permitted:
+                await ctx.reply("No permitted talk channels configured. I will not speak anywhere, including DMs.")
+                return
+            lines = ["**Permitted talk channels:**"]
+            for pc in permitted:
+                lines.append(f"- <#{pc['channel_id']}> ({pc['channel_name']})")
+            for part in split_for_discord("\n".join(lines)):
+                await ctx.reply(part)
+        elif action in ("add", "remove"):
+            channel_match = re.search(r"<#(\d+)>", args)
+            if not channel_match:
+                await ctx.reply(f"Usage: `{COMMAND_PREFIX}talk {action} #channel`")
+                return
+            channel_id = int(channel_match.group(1))
+            if action == "add":
+                channel = self.bot.get_channel(channel_id)
+                if channel is None:
+                    try:
+                        channel = await self.bot.fetch_channel(channel_id)
+                    except Exception:
+                        await ctx.reply("Could not access that channel.")
+                        return
+                await add_permitted_channel(channel_id, channel.name)
+                log.info("Talk permission granted: #%s (%s)", channel.name, channel_id)
+                await ctx.reply(f"<#{channel_id}> is now a permitted talk channel.")
+            else:
+                removed = await remove_permitted_channel(channel_id)
+                log.info("Talk permission revoked: %s", channel_id)
+                if removed:
+                    await ctx.reply(f"<#{channel_id}> is no longer a permitted talk channel.")
+                else:
+                    await ctx.reply(f"<#{channel_id}> was not a permitted talk channel.")
+        else:
+            await ctx.reply(
+                f"Unknown action. Use: `{COMMAND_PREFIX}talk add`, `{COMMAND_PREFIX}talk remove`, or `{COMMAND_PREFIX}talk list`")
 
     @commands.command(name="profile", help="View the bot's memory of a user.", usage="profile [@User]")
     @is_staff()

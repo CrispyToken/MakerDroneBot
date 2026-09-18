@@ -6,7 +6,7 @@ from pathlib import Path
 import discord
 from discord.ext import commands
 from config import TOKEN, COMMAND_PREFIX
-from core.db import init_db, track_user, get_monitored_channels
+from core.db import init_db, track_user, get_monitored_channels, is_channel_permitted
 from core.memory import warmup_memory
 from services.monitoring import monitoring_scheduler, emergency_monitoring
 from core.conversation import answer_question
@@ -48,15 +48,15 @@ async def on_ready():
 async def on_message(message: discord.Message):
     if message.author.bot or message.webhook_id: return
     await track_user(message)
-    await bot.process_commands(message)
-
+    can_speak = await is_channel_permitted(message.channel.id)
+    if can_speak:
+        await bot.process_commands(message)
     if message.guild is not None:
         try:
             monitored = await get_monitored_channels()
             for mc in monitored:
                 if mc["channel_id"] != message.channel.id: continue
                 if not mc["keywords"]: continue
-
                 keywords = [kw.strip().lower() for kw in mc["keywords"].split(",")]
                 message_lower = message.content.lower()
                 for keyword in keywords:
@@ -67,27 +67,27 @@ async def on_message(message: discord.Message):
                 break
         except Exception as e:
             log.exception("Keyword check failed: %s", e)
-
     is_mention = bot.user in message.mentions
     is_reply_to_bot = False
     if message.reference and message.reference.message_id:
         if message.reference.resolved and message.reference.resolved.author == bot.user:
             is_reply_to_bot = True
-
     if message.guild is None:
+        if not can_speak:
+            log.info("DM from %s dropped: channel not in talk whitelist.", message.author.display_name)
+            return
         await answer_question(bot, message, message.content)
         return
-
     if not (is_mention or is_reply_to_bot): return
-
+    if not can_speak:
+        log.info("Chat request dropped: #%s is not a permitted talk channel.", message.channel.name)
+        return
     question = message.content
     if is_mention:
         question = re.sub(rf"<@!?{bot.user.id}>\s*[,.:;]?\s*", "", question).strip()
-
     if not question and not message.attachments:
         await message.reply("How can I help you?")
         return
-
     await answer_question(bot, message, question)
 
 @bot.event

@@ -23,6 +23,11 @@ async def init_db():
                 keywords TEXT, last_message_id INTEGER DEFAULT 0, active INTEGER DEFAULT 1
             )
         """)
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS permitted_channels (
+            channel_id INTEGER PRIMARY KEY, channel_name TEXT, added_at TEXT
+        )
+        """)
         # Migration for databases created before the 'active' column existed.
         try:
             await db.execute("ALTER TABLE monitored_channels ADD COLUMN active INTEGER DEFAULT 1")
@@ -85,6 +90,36 @@ async def get_monitored_channels() -> list[dict]:
         async with db.execute("SELECT * FROM monitored_channels WHERE active = 1") as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+async def is_channel_permitted(channel_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT 1 FROM permitted_channels WHERE channel_id = ?", (channel_id,)) as cursor:
+            return await cursor.fetchone() is not None
+
+
+async def get_permitted_channels() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM permitted_channels ORDER BY added_at") as cursor:
+            rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def add_permitted_channel(channel_id: int, channel_name: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+        INSERT INTO permitted_channels (channel_id, channel_name, added_at) VALUES (?, ?, ?)
+        ON CONFLICT(channel_id) DO UPDATE SET channel_name = excluded.channel_name
+        """, (channel_id, channel_name, now))
+        await db.commit()
+
+
+async def remove_permitted_channel(channel_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("DELETE FROM permitted_channels WHERE channel_id = ?", (channel_id,))
+        await db.commit()
+    return cursor.rowcount > 0
 
 async def get_staff_role_ids() -> set[int]:
     async with aiosqlite.connect(DB_PATH) as db:
