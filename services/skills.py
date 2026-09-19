@@ -31,7 +31,7 @@ class SkillManager:
                     # Simple regex to split YAML frontmatter from Markdown content
                     match = re.match(r'^---\s*\n(.*?)\n---\s*\n(.*)$', text, re.DOTALL)
                     if not match:
-                        log.warning(f"No valid frontmatter found in {path}")
+                        log.warning("No valid frontmatter found in %s", path)
                         continue
                     
                     meta = match.group(1)
@@ -45,12 +45,12 @@ class SkillManager:
                             name = line.split(':', 1)[1].strip().strip('"\'')
                         elif line.startswith('description:'):
                             description = line.split(':', 1)[1].strip().strip('"\'')
-                    
+
                     if name:
                         self.skills[name.lower()] = Skill(name, description, content, path)
-                        log.info(f"Loaded Agent Skill: {name}")
+                        log.info("Loaded Agent Skill: %s", name)
                 except Exception as e:
-                    log.warning(f"Failed to parse {path}: {e}")
+                    log.warning("Failed to parse %s: %s", path, e)
 
     def get_skill(self, name: str) -> Skill | None:
         return self.skills.get(name.lower())

@@ -45,8 +45,8 @@ async def main():
         await engine_manager.start()
     else:
         log.info(
-            f"LLM_SERVER_MANAGER is '{LLM_SERVER_MANAGER}'. "
-            "Assuming external inference server is already running."
+            "LLM_SERVER_MANAGER is '%s'. Assuming external inference server is already running.",
+            LLM_SERVER_MANAGER,
         )
 
     try:

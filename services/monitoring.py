@@ -5,15 +5,13 @@ import discord
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from discord.ext import tasks
-import aiosqlite
 from core.locks import llm_lock, track_llm_task
-
 from config import (
     MONITOR_PROMPT_FILE, SERVER_RULES_FILE, MONITOR_INTERVAL_MINUTES,
     MONITOR_MAX_MESSAGES_PER_CHANNEL, MONITOR_MAX_IMAGES_PER_CYCLE,
-    ALLOWED_IMAGE_EXTENSIONS, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, REQUEST_TIMEOUT, DB_PATH
+    ALLOWED_IMAGE_EXTENSIONS, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, REQUEST_TIMEOUT
 )
-from core.db import get_monitored_channels, get_config, set_config
+from core.db import get_monitored_channels, get_config, set_config, set_monitored_last_message_ids
 from core.memory import memory_remember
 from utils.attachments import collect_image_attachments, VISION_ENABLED
 from core.console import print_completion
@@ -129,7 +127,7 @@ async def get_latest_message_id(channel: discord.TextChannel) -> int | None:
         log.exception("Failed to fetch latest message for channel %s", channel.id)
     return None
 
-def _image_attachments(msg: discord.Message) -> list:
+def _image_attachments(msg: discord.Message) -> list[discord.Attachment]:
     """Image attachments on a message (mirrors the chat-side detection logic)."""
     return [
         att for att in msg.attachments
@@ -210,7 +208,7 @@ def build_channel_section(channel: discord.TextChannel, mc: dict, prepared_messa
 
     return parts
 
-async def _scan_monitored_channels(bot: discord.Client, monitored: list[dict]):
+async def _scan_monitored_channels(bot: discord.Client, monitored: list[dict]) -> tuple[list, dict[int, int]]:
     """Shared unseen-message scan for scheduled and emergency runs.
 
     Pulls only messages newer than each channel's stored watermark and
@@ -254,23 +252,16 @@ async def _scan_monitored_channels(bot: discord.Client, monitored: list[dict]):
     return scan_results, baseline_updates
 
 
-async def _persist_scan_positions(scan_results, baseline_updates) -> None:
+async def _persist_scan_positions(scan_results: list, baseline_updates: dict[int, int]) -> None:
     """Persist per-channel scan positions after a successful evaluation."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        for channel, mc, prepared in scan_results:
-            new_id = prepared[-1][0].id if prepared else mc["last_message_id"]
-            await db.execute(
-                "UPDATE monitored_channels SET last_message_id = ? WHERE channel_id = ?",
-                (new_id, mc["channel_id"]),
-            )
-        for channel_id, latest_id in baseline_updates.items():
-            await db.execute(
-                "UPDATE monitored_channels SET last_message_id = ? WHERE channel_id = ?",
-                (latest_id, channel_id),
-            )
-        await db.commit()
+    updates: dict[int, int] = {}
+    for _, mc, prepared in scan_results:
+        updates[mc["channel_id"]] = prepared[-1][0].id if prepared else mc["last_message_id"]
+    for channel_id, latest_id in baseline_updates.items():
+        updates[channel_id] = latest_id
+    await set_monitored_last_message_ids(updates)
 
-async def run_monitoring_evaluation(bot: discord.Client, sections: list[list[dict]], is_emergency: bool = False):
+async def run_monitoring_evaluation(bot: discord.Client, sections: list[list[dict]], is_emergency: bool = False) -> None:
     monitoring_prompt = load_monitoring_prompt()
     if not monitoring_prompt:
         return
@@ -369,7 +360,7 @@ async def run_monitoring_cycle(bot: discord.Client) -> bool:
 
 
 @tasks.loop(seconds=SCHEDULER_TICK_SECONDS)
-async def monitoring_scheduler(bot: discord.Client):
+async def monitoring_scheduler(bot: discord.Client) -> None:
     """Checkpoint-based scheduler.
 
     The next-run timestamp lives in the database, so bot restarts never reset
@@ -398,7 +389,7 @@ async def monitoring_scheduler(bot: discord.Client):
         log.exception("Monitoring scheduler tick failed: %s", e)
 
 async def emergency_monitoring(bot: discord.Client, channel: discord.TextChannel, channel_config: dict,
-                               trigger_message: discord.Message):
+                               trigger_message: discord.Message) -> None:
     """Keyword-triggered immediate scan.
 
     Scans only the triggered channel, pulling only messages newer than its

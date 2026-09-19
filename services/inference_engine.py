@@ -49,7 +49,7 @@ def parse_preset_to_cli_args(preset_path: Path, model_filename: str) -> list[str
 
     exact_targets = {'*', model_stem.lower(), model_filename.lower()}
 
-    log.info(f"Parsing preset {preset_path.name} for model '{model_filename}' (stem: '{model_stem}')")
+    log.info("Parsing preset %s for model '%s' (stem: '%s')", preset_path.name, model_filename, model_stem)
 
     try:
         with open(preset_path, 'r', encoding='utf-8') as f:
@@ -62,7 +62,7 @@ def parse_preset_to_cli_args(preset_path: Path, model_filename: str) -> list[str
                     current_section_lower = current_section_raw.lower()
 
                     if current_section_lower in exact_targets or model_stem.lower().startswith(current_section_lower):
-                        log.info(f" -> Applying INI section: [{current_section_raw}]")
+                        log.info(" -> Applying INI section: [%s]", current_section_raw)
                         current_section = current_section_raw
                     else:
                         current_section = None
@@ -91,7 +91,7 @@ def parse_preset_to_cli_args(preset_path: Path, model_filename: str) -> list[str
     if not cli_args:
         log.warning("No preset arguments were loaded. Check that your INI section name matches the model filename.")
     else:
-        log.info(f"Successfully loaded {len(cli_args)} preset arguments.")
+        log.info("Successfully loaded %s preset arguments.", len(cli_args))
 
     return cli_args
 
@@ -162,10 +162,10 @@ class InferenceEngine:
         without a working backend.
         """
         if not model_rel_path:
-            log.info(f"InferenceEngine: no target model supplied, keeping '{self.current_model_rel_path}'.")
+            log.info("InferenceEngine: no target model supplied, keeping '%s'.", self.current_model_rel_path)
             return
         if model_rel_path == self.current_model_rel_path and self._process_alive():
-            log.info(f"InferenceEngine: '{model_rel_path}' is already loaded, skipping swap.")
+            log.info("InferenceEngine: '%s' is already loaded, skipping swap.", model_rel_path)
             return
         if not self._process_alive():
             raise RuntimeError(
@@ -174,38 +174,39 @@ class InferenceEngine:
                 "free it and restart the bot, or use LLM_SERVER_MANAGER=external."
             )
         previous = self.current_model_rel_path
-        log.info(f"InferenceEngine: swapping '{previous}' -> '{model_rel_path}'.")
+        log.info("InferenceEngine: swapping '%s' -> '%s'.", previous, model_rel_path)
         await self.stop()
         self._set_model(model_rel_path)
         try:
             await self.start()
         except (Exception, asyncio.CancelledError):
-            log.exception(f"InferenceEngine: '{model_rel_path}' failed to load; rolling back to '{previous}'.")
+            log.exception("InferenceEngine: '%s' failed to load; rolling back to '%s'.", model_rel_path, previous)
             await self.stop()
             self._set_model(previous)
             try:
                 await self.start()
             except Exception:
                 log.exception(
-                    f"InferenceEngine: rollback to '{previous}' also failed; no model is loaded. "
-                    "A bot restart is likely required."
+                    "InferenceEngine: rollback to '%s' also failed; no model is loaded. "
+                    "A bot restart is likely required.",
+                    previous,
                 )
             raise
-        log.info(f"InferenceEngine: now serving '{self.current_model_rel_path}'.")
+        log.info("InferenceEngine: now serving '%s'.", self.current_model_rel_path)
 
     async def load_default_model(self) -> None:
         await self.swap_model(self.default_model_rel_path)
 
     async def load_ingest_model(self) -> None:
         if not self.ingest_model_rel_path:
-            log.info(f"InferenceEngine: no ingest model configured, staying on '{self.current_model_rel_path}'.")
+            log.info("InferenceEngine: no ingest model configured, staying on '%s'.", self.current_model_rel_path)
             return
         await self.swap_model(self.ingest_model_rel_path)
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
-    async def start(self):
+    async def start(self) -> None:
         if await self._is_running():
             raise RuntimeError(
                 f"Port {self.port} is already serving an OpenAI-compatible API. "
@@ -218,7 +219,7 @@ class InferenceEngine:
         if not os.path.exists(self.preset_path):
             raise FileNotFoundError(f"Preset INI not found at: {self.preset_path}")
 
-        log.info(f"Parsing preset INI: {self.preset_path.name}")
+        log.info("Parsing preset INI: %s", self.preset_path.name)
         preset_args = parse_preset_to_cli_args(self.preset_path, self.model_path.name)
 
         cmd = [
@@ -234,12 +235,12 @@ class InferenceEngine:
         # Append the dynamically generated preset arguments
         cmd.extend(preset_args)
 
-        log.info(f"Starting llama-server on port {self.port} with {len(preset_args)} preset arguments.")
+        log.info("Starting llama-server on port %s with %s preset arguments.", self.port, len(preset_args))
         self.process = subprocess.Popen(cmd, stdout=None, stderr=None)
         await self._wait_for_healthy(timeout=300)
         self.current_model_rel_path = self.model_rel_path
 
-    async def stop(self):
+    async def stop(self) -> None:
         if self.process and self.process.poll() is None:
             log.info("Shutting down llama-server...")
             self.process.terminate()
@@ -256,7 +257,7 @@ class InferenceEngine:
     # ------------------------------------------------------------------
     # Health checks
     # ------------------------------------------------------------------
-    def _auth_headers(self):
+    def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
     async def _is_running(self) -> bool:
@@ -268,16 +269,16 @@ class InferenceEngine:
         except Exception:
             return False
 
-    async def _wait_for_stopped(self, timeout: int = 30):
+    async def _wait_for_stopped(self, timeout: int = 30) -> None:
         """Wait until the server no longer answers on its port."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not await self._is_running():
                 return
             await asyncio.sleep(0.5)
-        log.warning(f"llama-server still answering on port {self.port} after stop; restart may fail.")
+        log.warning("llama-server still answering on port %s after stop; restart may fail.", self.port)
 
-    async def _wait_for_healthy(self, timeout: int = 300):
+    async def _wait_for_healthy(self, timeout: int = 300) -> None:
         base = f"http://127.0.0.1:{self.port}/v1"
         models_url = f"{base}/models"
         chat_url = f"{base}/chat/completions"
