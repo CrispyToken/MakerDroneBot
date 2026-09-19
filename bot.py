@@ -19,27 +19,30 @@ log = logging.getLogger("rag-bot")
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
+class MakerDroneBot(commands.Bot):
+    async def setup_hook(self) -> None:
+        await init_db()
+
+        skills_module.skill_manager = SkillManager(SKILLS_DIRS)
+        log.info("Loaded %s Agent Skills.", len(skills_module.skill_manager.skills))
+
+        cogs_dir = Path(__file__).parent / "cogs"
+        for filename in os.listdir(cogs_dir):
+            if filename.endswith(".py") and not filename.startswith("__"):
+                try:
+                    await self.load_extension(f"cogs.{filename[:-3]}")
+                    log.info("Loaded cog: %s", filename)
+                except Exception:
+                    log.exception("Failed to load cog %s", filename)
+
+        asyncio.create_task(warmup_memory())
+
+
+bot = MakerDroneBot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
 
 @bot.event
 async def on_ready() -> None:
-    await init_db()
     log.info("Logged in as %s", bot.user)
-
-    skills_module.skill_manager = SkillManager(SKILLS_DIRS)
-    log.info("Loaded %s Agent Skills.", len(skills_module.skill_manager.skills))
-
-    cogs_dir = Path(__file__).parent / "cogs"
-    for filename in os.listdir(cogs_dir):
-        if filename.endswith(".py") and not filename.startswith("__"):
-            try:
-                await bot.load_extension(f"cogs.{filename[:-3]}")
-                log.info("Loaded cog: %s", filename)
-            except Exception:
-                log.exception("Failed to load cog %s", filename)
-
-    asyncio.create_task(warmup_memory())
-
     if not monitoring_scheduler.is_running():
         monitoring_scheduler.start(bot)
         log.info("Monitoring scheduler started.")
@@ -115,13 +118,17 @@ async def on_message(message: discord.Message) -> None:
 
 @bot.event
 async def on_command_error(ctx: commands.Context, error: Exception) -> None:
+    if isinstance(error, commands.CommandNotFound):
+        return
     if isinstance(error, commands.MissingRequiredArgument):
         await ctx.reply("Missing required argument.")
         return
+    if isinstance(error, commands.UserInputError):
+        usage_hint = f"\nUsage: `{COMMAND_PREFIX}{ctx.command.usage}`" if ctx.command and ctx.command.usage else ""
+        await ctx.reply(f"{error}{usage_hint}")
+        return
     if isinstance(error, commands.CheckFailure):
         await ctx.reply("You need `Manage Messages` permission in this server to use that command.")
-        return
-    if isinstance(error, commands.CommandNotFound):
         return
     log.error("Unhandled command error", exc_info=error)
     try:

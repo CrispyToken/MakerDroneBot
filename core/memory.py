@@ -123,19 +123,25 @@ class MemoryManager:
         from lightrag import LightRAG
         from lightrag.utils import EmbeddingFunc
 
+        async def llm_model_func(prompt, system_prompt=None, history_messages=None, **kwargs):
+            return await self._llm_model_func(prompt, system_prompt, history_messages, **kwargs)
+
+        async def embedding_func(texts: list[str]) -> np.ndarray:
+            return await self._embedding_func(texts)
+
         working_dir = LIGHTRAG_DIR / workspace
         working_dir.mkdir(parents=True, exist_ok=True)
 
         rag = LightRAG(
             working_dir=str(working_dir),
             workspace=workspace,
-            llm_model_func=self._llm_model_func,
+            llm_model_func=llm_model_func,
             llm_model_name=LLM_MODEL_ID,
             embedding_func=EmbeddingFunc(
                 embedding_dim=LIGHTRAG_EMBED_DIM,
                 max_token_size=8192,
                 model_name=LIGHTRAG_EMBED_MODEL,
-                func=self._embedding_func,
+                func=embedding_func,
             ),
             chunk_token_size=LIGHTRAG_CHUNK_SIZE,
             chunk_overlap_token_size=LIGHTRAG_CHUNK_OVERLAP,
@@ -216,8 +222,8 @@ class MemoryManager:
 
             await self._run_in_background(_do)
             log.info("Memory backends ready.")
-        except Exception as e:
-            log.warning("Memory warmup failed (non-critical): %s", e)
+        except Exception:
+            log.warning("Memory warmup failed (non-critical)", exc_info=True)
 
     async def shutdown(self) -> None:
         """Finalize storages and stop the background loop. Call on bot shutdown."""
