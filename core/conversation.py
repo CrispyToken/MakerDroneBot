@@ -3,7 +3,7 @@ import logging
 import discord
 from datetime import datetime
 from core.agent import get_agent, BotDependencies
-from core.db import get_user_profile
+from core.db import get_user_profile, get_staff_role_ids
 from utils.context import build_server_channel_list, get_conversation_context
 from utils.attachments import collect_image_attachments, collect_text_attachments
 from utils.formatting import send_final_answer
@@ -59,13 +59,20 @@ async def _gather_dependencies(message: discord.Message, active_skills: list[Ski
     channel_name = message.channel.name if message.guild else "Direct Message"
     channel_topic = getattr(message.channel, 'topic', None) or ""
     server_channels = build_server_channel_list(message.guild)
-
+    user_roles: list[str] | None = None
+    is_staff = False
+    if isinstance(message.author, discord.Member):
+        user_roles = [role.name for role in message.author.roles if role.name != "@everyone"]
+        staff_role_ids = await get_staff_role_ids()
+        is_staff = bool({role.id for role in message.author.roles} & staff_role_ids)
     return BotDependencies(
         user_profile=profile,
         current_time_str=_format_current_time(),
         channel_name=channel_name,
         channel_topic=channel_topic,
         server_channels=server_channels,
+        user_roles=user_roles,
+        is_staff=is_staff,
         active_skills=active_skills,
     )
 

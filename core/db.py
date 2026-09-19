@@ -41,6 +41,12 @@ _SQL_TRACK_USER = """
         username = excluded.username, display_name = excluded.display_name,
         roles = excluded.roles, last_seen = excluded.last_seen, message_count = message_count + 1
 """
+_SQL_TRACK_USER_OUTSIDE_GUILD = """
+    INSERT INTO user_profiles (user_id, username, display_name, roles, join_date, last_seen, message_count)
+    VALUES (?, ?, ?, '', '', ?, 1) ON CONFLICT(user_id) DO UPDATE SET
+        username = excluded.username, display_name = excluded.display_name,
+        last_seen = excluded.last_seen, message_count = message_count + 1
+"""
 _SQL_ENSURE_USER = """
     INSERT OR IGNORE INTO user_profiles (user_id, username, display_name, roles, join_date, last_seen, message_count)
     VALUES (?, ?, ?, ?, ?, ?, 0)
@@ -94,14 +100,20 @@ async def init_db() -> None:
 
 async def track_user(message: discord.Message) -> None:
     if message.author.bot: return
-    roles = ", ".join([r.name for r in message.author.roles if r.name != "@everyone"])
-    join_date = message.author.joined_at.isoformat() if message.author.joined_at else ""
     now = datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            _SQL_TRACK_USER,
-            (message.author.id, message.author.name, message.author.display_name, roles, join_date, now),
-        )
+        if isinstance(message.author, discord.Member):
+            roles = ", ".join([r.name for r in message.author.roles if r.name != "@everyone"])
+            join_date = message.author.joined_at.isoformat() if message.author.joined_at else ""
+            await db.execute(
+                _SQL_TRACK_USER,
+                (message.author.id, message.author.name, message.author.display_name, roles, join_date, now),
+            )
+        else:
+            await db.execute(
+                _SQL_TRACK_USER_OUTSIDE_GUILD,
+                (message.author.id, message.author.name, message.author.display_name, now),
+            )
         await db.commit()
 
 
