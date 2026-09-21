@@ -12,7 +12,7 @@ from services.skills import Skill
 import services.skills as skills_module
 from core.llm_reasoning import chat_reasoning
 from core.console import print_user_line
-from core.locks import llm_lock, track_llm_task
+from core.locks import llm_lock, track_llm_task, active_llm_task_label
 from config import CONVERSATION_MAX_HISTORY
 
 log = logging.getLogger("rag-bot")
@@ -31,6 +31,11 @@ def detect_explicit_skills(question: str) -> list[Skill]:
         if any(re.search(p, q) for p in patterns):
             found.append(skill)
     return found
+
+def _busy_message(busy_label: str | None) -> str:
+    if busy_label:
+        return f"I'm currently processing another task: {busy_label}. Please try again in a minute."
+    return "I'm currently processing another task. Please try again in a minute."
 
 async def _keep_typing(channel: discord.abc.Messageable, stop_event: asyncio.Event) -> None:
     while not stop_event.is_set():
@@ -120,7 +125,7 @@ async def _execute_agent(message: discord.Message, user_content: str | list, dep
     try:
         await asyncio.wait_for(llm_lock.acquire(), timeout=5)
     except asyncio.TimeoutError:
-        await message.reply("I'm currently processing another task. Please try again in a minute.")
+        await message.reply(_busy_message(active_llm_task_label()))
         return None
 
     try:
@@ -136,8 +141,9 @@ async def _execute_agent(message: discord.Message, user_content: str | list, dep
 
 async def answer_question(bot: discord.Client, message: discord.Message, question: str) -> None:
     if llm_lock.locked():
-        log.info("Chat request rejected: LLM is busy with another task.")
-        await message.reply("I'm currently processing another task. Please try again in a minute.")
+        busy_label = active_llm_task_label()
+        log.info("Chat request rejected: LLM is busy with another task (%s).", busy_label or "unknown")
+        await message.reply(_busy_message(busy_label))
         return
 
     stop_typing = asyncio.Event()

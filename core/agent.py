@@ -7,6 +7,7 @@ from core.memory import memory_remember, memory_recall_dynamic, memory_recall_kn
 from core.prompt_builder import BotDependencies, build_system_prompt
 from services.web_search import execute_web_search
 import services.skills as skills_module
+from services.game_db import game_database
 
 log = logging.getLogger("rag-bot")
 
@@ -85,5 +86,18 @@ def get_agent() -> Agent[BotDependencies, str]:
     @agent.tool
     async def search_web(ctx: RunContext[BotDependencies], query: str) -> str:
         return await execute_web_search(query)
+
+    @agent.tool
+    async def game_lookup(ctx: RunContext[BotDependencies], query: str) -> str:
+        """
+        Looks up verified Event Horizon game data by name or keyword. Use this for any question
+        about concrete game facts: ships, modules, weapons, ammunition, component stats, costs,
+        workshop levels, factions, or ship builds. Pass the entity name as the user said it
+        (e.g. "Valkyrie", "heavy railgun"); the tool works out whether it is a ship or a module
+        and returns verified database values for every match. Quote those values exactly and
+        never invent numbers. If multiple matches come back, present the candidates or ask
+        which one is meant.
+        """
+        return game_database.lookup(query)
 
     return agent

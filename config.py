@@ -83,6 +83,8 @@ TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".log", ".csv", ".json"}
 INGEST_EXTENSIONS = TEXT_EXTENSIONS.union({".pdf", ".docx", ".html", ".htm", ".epub"})
 ATTACHMENT_TEXT_EXTENSIONS = INGEST_EXTENSIONS.union({".py", ".yaml", ".yml", ".xml", ".toml", ".ini", ".cfg", ".conf"})
 
+EH_DATABASE_DIR = Path(os.getenv("EH_DATABASE_DIR", "databases")).resolve()
+
 # Storage
 DATA_DIR = Path(os.getenv("DATA_DIR", "data")).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)

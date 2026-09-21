@@ -338,7 +338,7 @@ async def run_monitoring_cycle(bot: discord.Client) -> bool:
 
     async with llm_lock:
         try:
-            async with track_llm_task("monitoring cycle"):
+            async with track_llm_task("monitoring"):
                 scan_results, baseline_updates = await _scan_monitored_channels(bot, monitored)
                 # LLM is only called when at least one channel has new messages.
                 if scan_results:

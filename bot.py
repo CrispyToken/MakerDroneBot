@@ -13,6 +13,7 @@ from core.conversation import answer_question
 from config import SKILLS_DIRS
 from services.skills import SkillManager
 import services.skills as skills_module
+from services.game_db import load_game_database
 
 log = logging.getLogger("rag-bot")
 
@@ -35,6 +36,7 @@ class MakerDroneBot(commands.Bot):
                 except Exception:
                     log.exception("Failed to load cog %s", filename)
 
+        await asyncio.to_thread(load_game_database)
         asyncio.create_task(warmup_memory())
 
 

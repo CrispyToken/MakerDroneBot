@@ -129,7 +129,7 @@ class StaffCog(commands.Cog):
                     return ok_results, fail_results, deleted_results, True, False
 
             try:
-                async with track_llm_task("ingest"):
+                async with track_llm_task("ingestion"):
                     for deleted_key in deleted_keys:
                         ds_name = _dataset_name(deleted_key)
                         try:
@@ -488,8 +488,7 @@ class StaffCog(commands.Cog):
         await ctx.reply(f"Cleared all notes for {member.display_name}.")
 
     @commands.command(name="interrupt",
-                      help="Cancel the currently running LLM task (chat, monitoring, or ingest). "
-                           "The inference server and loaded model are unaffected.",
+                      help="Cancel the currently running LLM task.",
                       usage="interrupt")
     @is_staff()
     async def interrupt_cmd(self, ctx: commands.Context) -> None:

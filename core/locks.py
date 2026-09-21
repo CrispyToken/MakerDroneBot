@@ -31,6 +31,11 @@ async def track_llm_task(label: str):
     finally:
         _active_task, _active_label = prev_task, prev_label
 
+def active_llm_task_label() -> str | None:
+    """Label of the currently active LLM task, or None if nothing is running."""
+    if _active_task is None or _active_task.done():
+        return None
+    return _active_label or "unknown task"
 
 def interrupt_active_llm() -> str | None:
     """Cancel the currently tracked LLM task, if any.
