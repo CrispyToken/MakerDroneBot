@@ -100,4 +100,27 @@ def get_agent() -> Agent[BotDependencies, str]:
         """
         return game_database.lookup(query)
 
+    @agent.tool
+    async def read_channel(ctx: RunContext[BotDependencies], channel: str = "", message_link: str = "") -> str:
+        """
+        Reads messages from a Discord channel. Use this when a user asks to see what's happening
+        in a specific channel, or provides a link to a specific message.
+
+        RESTRICTION: Only use this tool if the [Request Authority] block in your system prompt
+        confirms the requesting user is CONFIRMED STAFF. Do not use this tool for regular members.
+
+        Parameters:
+        - channel: Channel name, mention (e.g., <#123456>), or ID. Provide this when the user
+          asks to read a channel.
+        - message_link: Full Discord message URL. Provide this when the user shares a link to a
+          specific message. The tool will automatically fetch context around that message.
+
+        Provide either channel or message_link. If message_link is provided, it takes precedence.
+        """
+        if not ctx.deps.is_staff:
+            return "Access denied: This tool can only be used by confirmed staff members."
+
+        from services.channel_reader import read_channel_content
+        return await read_channel_content(ctx.deps.bot, ctx.deps.guild_id, channel, message_link)
+
     return agent

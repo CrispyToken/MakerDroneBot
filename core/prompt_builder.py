@@ -3,12 +3,14 @@ from dataclasses import dataclass, field
 from config import SYSTEM_PROMPT_FILE
 from services.skills import Skill
 import services.skills as skills_module
+import discord
 
 log = logging.getLogger("rag-bot")
 
-
 @dataclass
 class BotDependencies:
+    bot: discord.Client
+    guild_id: int
     user_profile: dict | None
     current_time_str: str
     channel_name: str

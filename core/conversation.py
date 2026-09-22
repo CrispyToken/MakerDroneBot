@@ -59,18 +59,24 @@ def _format_current_time() -> str:
         f"{tz_name} (UTC{formatted_offset})"
     )
 
-async def _gather_dependencies(message: discord.Message, active_skills: list[Skill]) -> BotDependencies:
+
+async def _gather_dependencies(bot: discord.Client, message: discord.Message, active_skills: list[Skill]) -> BotDependencies:
     profile = await get_user_profile(message.author.id)
     channel_name = message.channel.name if message.guild else "Direct Message"
     channel_topic = getattr(message.channel, 'topic', None) or ""
     server_channels = build_server_channel_list(message.guild)
     user_roles: list[str] | None = None
     is_staff = False
+    guild_id = message.guild.id if message.guild else 0
+
     if isinstance(message.author, discord.Member):
         user_roles = [role.name for role in message.author.roles if role.name != "@everyone"]
         staff_role_ids = await get_staff_role_ids()
         is_staff = bool({role.id for role in message.author.roles} & staff_role_ids)
+
     return BotDependencies(
+        bot=bot,
+        guild_id=guild_id,
         user_profile=profile,
         current_time_str=_format_current_time(),
         channel_name=channel_name,
@@ -171,7 +177,7 @@ async def answer_question(bot: discord.Client, message: discord.Message, questio
             await message.reply("Provide a question or attach an image/text file.")
             return
 
-        deps = await _gather_dependencies(message, active_skills)
+        deps = await _gather_dependencies(bot, message, active_skills)
         user_content = await _assemble_user_content(
             message, bot.user.id, bot.user.display_name, question_for_model, text_blocks, images
         )
@@ -183,9 +189,9 @@ async def answer_question(bot: discord.Client, message: discord.Message, questio
     except RuntimeError as e:
         log.exception("Model/request error")
         await message.reply(f"Model/request error:\n`{e}`")
-    except Exception as e:
+    except Exception:
         log.exception("Answer handler failed")
-        await message.reply(f"Sorry, something went wrong.\n`{e}`")
+        await message.reply("Sorry, something went wrong while processing that. Please try again in a moment.")
     finally:
         stop_typing.set()
         typing_task.cancel()

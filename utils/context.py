@@ -1,6 +1,13 @@
+import asyncio
+import logging
 import discord
 from utils.formatting import clean_answer_text
 from config import CONVERSATION_MAX_CHAIN_EXTRA
+
+log = logging.getLogger("rag-bot")
+
+_HISTORY_RETRIES = 3
+_RETRY_DELAY_SECONDS = 1.5
 
 
 def build_server_channel_list(guild: discord.Guild) -> str:
@@ -45,8 +52,10 @@ def _reply_suffix(msg: discord.Message, known: dict[int, discord.Message]) -> st
     if not ref or not ref.message_id:
         return ""
     target = ref.resolved or known.get(ref.message_id)
-    if target is not None:
+    if isinstance(target, discord.Message):
         return f" (in reply to {target.author.display_name})"
+    if target is not None:
+        return " (in reply to a deleted message)"
     return " (in reply to an earlier message not shown here)"
 
 
@@ -54,6 +63,21 @@ def _format_line(msg: discord.Message, bot_user_id: int, known: dict[int, discor
     return (f"[{_format_ts(msg)}] {msg.author.display_name}"
             f"{_reply_suffix(msg, known)}: {_message_text(msg, bot_user_id)}")
 
+async def _resolve_referenced_message(ref: discord.MessageReference | None,
+                                      channel: discord.abc.Messageable) -> discord.Message | None:
+    """Resolve a message reference to a live Message, or None when the
+    reference is empty, points to a deleted message, or cannot be fetched."""
+    if not ref or not ref.message_id:
+        return None
+    target = ref.resolved
+    if isinstance(target, discord.Message):
+        return target
+    if target is not None:
+        return None
+    try:
+        return await channel.fetch_message(ref.message_id)
+    except Exception:
+        return None
 
 async def _trace_outside_reply_chain(message: discord.Message, bot_user_id: int,
                                      known: dict[int, discord.Message],
@@ -71,14 +95,9 @@ async def _trace_outside_reply_chain(message: discord.Message, bot_user_id: int,
     if not ref or not ref.message_id or ref.message_id in known:
         return []
 
-    target = ref.resolved
-    if target is None:
-        try:
-            target = await message.channel.fetch_message(ref.message_id)
-        except Exception:
-            return []
+    target = await _resolve_referenced_message(ref, message.channel)
     if target is None or target.author.id != bot_user_id:
-        return []  # only replies to our own out-of-window messages are traced
+        return []
 
     extras: list[discord.Message] = []
     current = target
@@ -90,31 +109,15 @@ async def _trace_outside_reply_chain(message: discord.Message, bot_user_id: int,
         extras.append(current)
 
         # current is a bot answer; find the user message that triggered it.
-        cref = current.reference
-        if not cref or not cref.message_id:
-            break
-        user_msg = cref.resolved
-        if user_msg is None:
-            try:
-                user_msg = await message.channel.fetch_message(cref.message_id)
-            except Exception:
-                break
+        user_msg = await _resolve_referenced_message(current.reference, message.channel)
         if user_msg is None or user_msg.id in known or any(m.id == user_msg.id for m in extras):
-            break  # chain reconnected with visible context
+            break
         if len(extras) >= max_extra:
             break
         extras.append(user_msg)
 
         # Continue only if that user message was itself a reply to our bot.
-        uref = user_msg.reference
-        if not uref or not uref.message_id:
-            break  # initial user prompt reached; it stays as the last extra
-        next_bot = uref.resolved
-        if next_bot is None:
-            try:
-                next_bot = await message.channel.fetch_message(uref.message_id)
-            except Exception:
-                break
+        next_bot = await _resolve_referenced_message(user_msg.reference, message.channel)
         if next_bot is None or next_bot.author.id != bot_user_id:
             break
         current = next_bot
@@ -123,18 +126,41 @@ async def _trace_outside_reply_chain(message: discord.Message, bot_user_id: int,
     return extras
 
 
+async def _fetch_history_window(message: discord.Message, bot_user_id: int,
+                                max_history: int) -> list[discord.Message]:
+    """Fetch the recent-message window, retrying on transient Discord 5xx errors.
+
+    Returns an empty window if Discord keeps failing after all retries, so a
+    temporary API outage degrades gracefully instead of crashing the turn.
+    """
+    for attempt in range(_HISTORY_RETRIES):
+        try:
+            window: list[discord.Message] = []
+            async for msg in message.channel.history(limit=max_history * 3, before=message):
+                if not _is_eligible(msg, bot_user_id):
+                    continue
+                window.append(msg)
+                if len(window) >= max_history:
+                    break
+            window.reverse()
+            return window
+        except discord.DiscordServerError as e:
+            if attempt < _HISTORY_RETRIES - 1:
+                delay = _RETRY_DELAY_SECONDS * (attempt + 1)
+                log.warning("History fetch failed (attempt %d/%d): %s. Retrying in %.1fs.",
+                            attempt + 1, _HISTORY_RETRIES, e, delay)
+                await asyncio.sleep(delay)
+            else:
+                log.warning("History fetch failed after %d attempts; continuing without conversation history: %s",
+                            _HISTORY_RETRIES, e)
+    return []
+
+
 async def get_conversation_context(message: discord.Message, bot_user_id: int, bot_display_name: str,
                                    max_history: int = 15) -> list[str]:
     window: list[discord.Message] = []
     if max_history > 0:
-        async for msg in message.channel.history(limit=max_history * 3, before=message):
-            if not _is_eligible(msg, bot_user_id):
-                continue
-            window.append(msg)
-            if len(window) >= max_history:
-                break
-    window.reverse()          # oldest -> newest, ends just before the trigger
-
+        window = await _fetch_history_window(message, bot_user_id, max_history)
     known: dict[int, discord.Message] = {m.id: m for m in window}
 
     extras = await _trace_outside_reply_chain(message, bot_user_id, known, CONVERSATION_MAX_CHAIN_EXTRA)

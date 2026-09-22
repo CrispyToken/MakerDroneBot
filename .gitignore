@@ -13,6 +13,8 @@ prompt/*
 !prompt/.gitkeep
 models/*
 !models/.gitkeep
+databases/*
+!databases/.gitkeep
 llama-cpp-python
 .idea/
 .DS_Store
