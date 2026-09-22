@@ -1,5 +1,6 @@
 import logging
-from pydantic_ai import Agent, RunContext
+from typing import Any
+from pydantic_ai import Agent, RunContext, ImageUrl
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID
@@ -101,26 +102,33 @@ def get_agent() -> Agent[BotDependencies, str]:
         return game_database.lookup(query)
 
     @agent.tool
-    async def read_channel(ctx: RunContext[BotDependencies], channel: str = "", message_link: str = "") -> str:
+    async def read_channel(ctx: RunContext[BotDependencies], channel: str = "", message_link: str = "") -> Any:
         """
-        Reads messages from a Discord channel. Use this when a user asks to see what's happening
-        in a specific channel, or provides a link to a specific message.
-
+        Reads messages from a Discord channel, including image attachments. Use this when a user
+        asks to see what's happening in a specific channel, or provides a link to a specific
+        message. For a channel read, every image attached to messages in the read window is
+        included; for a message link, only the linked message's own attachments are included.
         RESTRICTION: Only use this tool if the [Request Authority] block in your system prompt
         confirms the requesting user is CONFIRMED STAFF. Do not use this tool for regular members.
-
         Parameters:
         - channel: Channel name, mention (e.g., <#123456>), or ID. Provide this when the user
           asks to read a channel.
         - message_link: Full Discord message URL. Provide this when the user shares a link to a
           specific message. The tool will automatically fetch context around that message.
-
         Provide either channel or message_link. If message_link is provided, it takes precedence.
         """
         if not ctx.deps.is_staff:
             return "Access denied: This tool can only be used by confirmed staff members."
-
         from services.channel_reader import read_channel_content
-        return await read_channel_content(ctx.deps.bot, ctx.deps.guild_id, channel, message_link)
+        parts = await read_channel_content(ctx.deps.bot, ctx.deps.guild_id, channel, message_link)
+        content: list[str | ImageUrl] = []
+        for part in parts:
+            if isinstance(part, str):
+                content.append(part)
+            else:
+                content.append(ImageUrl(url=part["image_url"]["url"]))
+        if len(content) == 1 and isinstance(content[0], str):
+            return content[0]
+        return content
 
     return agent
