@@ -3,6 +3,7 @@ import threading
 import json
 import hashlib
 import logging
+import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -12,6 +13,7 @@ from config import (
     LIGHTRAG_DIR, LIGHTRAG_EMBED_MODEL, LIGHTRAG_EMBED_DIM,
     LIGHTRAG_CHUNK_SIZE, LIGHTRAG_CHUNK_OVERLAP, LIGHTRAG_QUERY_MAX_TOKENS,
     EXTRACT_LLM_TIMEOUT, LLM_TIMEOUT, LLM_MAX_EXTRACT_OUTPUT_TOKENS,
+    EMBED_CACHE_DIR,
 )
 
 log = logging.getLogger("rag-bot")
@@ -22,6 +24,18 @@ if TYPE_CHECKING:
     from fastembed import TextEmbedding
     from lightrag import LightRAG, QueryParam
 
+def _materialize_fastembed_snapshots(cache_dir: Path) -> int:
+    """Replace symlinks in cached model snapshots with real files."""
+    materialized = 0
+    for snapshot in cache_dir.glob("models--*/snapshots/*"):
+        for entry in snapshot.iterdir():
+            if entry.is_symlink():
+                target = entry.resolve()
+                if target.is_file():
+                    entry.unlink()
+                    shutil.copy2(target, entry)
+                    materialized += 1
+    return materialized
 
 class MemoryManager:
     """Encapsulates all memory-backend state: the persistent background event
@@ -105,7 +119,19 @@ class MemoryManager:
             if self._embed_model is None:
                 from fastembed import TextEmbedding
                 log.info("Loading embedding model: %s", LIGHTRAG_EMBED_MODEL)
-                self._embed_model = TextEmbedding(model_name=LIGHTRAG_EMBED_MODEL)
+                try:
+                    self._embed_model = TextEmbedding(
+                        model_name=LIGHTRAG_EMBED_MODEL, cache_dir=str(EMBED_CACHE_DIR)
+                    )
+                except Exception:
+                    fixed = _materialize_fastembed_snapshots(EMBED_CACHE_DIR)
+                    log.warning(
+                        "Embedding model load failed; materialized %d cached file(s) at %s and retrying.",
+                        fixed, EMBED_CACHE_DIR,
+                    )
+                    self._embed_model = TextEmbedding(
+                        model_name=LIGHTRAG_EMBED_MODEL, cache_dir=str(EMBED_CACHE_DIR)
+                    )
             return self._embed_model
 
     async def _embedding_func(self, texts: list[str]) -> np.ndarray:

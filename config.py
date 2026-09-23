@@ -106,6 +106,9 @@ EXTRACT_LLM_TIMEOUT = int(os.getenv("EXTRACT_LLM_TIMEOUT", "1800"))
 LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "1800"))
 LLM_MAX_EXTRACT_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_EXTRACT_OUTPUT_TOKENS", "8192"))
 
+EMBED_CACHE_DIR = Path(os.getenv("EMBED_CACHE_DIR", str(DATA_DIR / "fastembed_cache"))).resolve()
+EMBED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
 # Discord Limits
 DISCORD_CHAR_LIMIT = max(500, min(int(os.getenv("DISCORD_CHAR_LIMIT", "2000")), 2000))
 DISCORD_MAX_SPLIT_CHARS = max(DISCORD_CHAR_LIMIT, min(int(os.getenv("DISCORD_MAX_SPLIT_CHARS", "4000")), DISCORD_CHAR_LIMIT * 2))

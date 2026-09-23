@@ -80,8 +80,25 @@ def _user_profile_section(profile: dict) -> str:
         f"You are currently speaking to {profile['display_name']} (@{profile['username']}).\n"
         f"Member since: {join_str}\n"
     )
-    if profile['staff_notes']:
-        section += f"Staff Notes regarding this user: {profile['staff_notes']}\n"
+
+    if profile.get('staff_notes'):
+        notes = profile['staff_notes'].strip()
+        if notes:
+            # Format multiple notes clearly (one per line)
+            note_lines = [line.strip() for line in notes.split('\n') if line.strip()]
+            if len(note_lines) == 1:
+                notes_text = note_lines[0]
+            else:
+                notes_text = '\n  • ' + '\n  • '.join(note_lines)
+
+            section += (
+                f"\n\n[Staff Notes About This User - IMPORTANT CONTEXT]\n"
+                f"The following notes have been added by staff about this specific user. "
+                f"These are important context about their history, behavior, or special circumstances. "
+                f"Always take these notes into account when responding to this user.\n"
+                f"{notes_text}\n"
+            )
+
     return section
 
 
