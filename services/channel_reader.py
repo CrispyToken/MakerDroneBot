@@ -22,21 +22,44 @@ def _author_label(msg: discord.Message) -> str:
     return f"{display_name} (@{author.name})"
 
 
-def _message_lines(msg: discord.Message, target_id: int | None) -> list[str]:
-    lines = []
-    if target_id is not None and msg.id == target_id:
-        lines.append(">>> TARGET MESSAGE (linked by user) <<<")
+def _serialize_embed(embed: discord.Embed) -> str:
+    parts = []
+    if embed.title:
+        parts.append(f"[Embed Title] {embed.title}")
+    if embed.description:
+        parts.append(f"[Embed Description] {embed.description}")
+    if embed.fields:
+        for field in embed.fields:
+            parts.append(f"[Embed Field] {field.name}: {field.value}")
+    if embed.footer and embed.footer.text:
+        parts.append(f"[Embed Footer] {embed.footer.text}")
+    if embed.author and embed.author.name:
+        parts.append(f"[Embed Author] {embed.author.name}")
+    return "\n".join(parts)
+
+
+def _message_line(msg: discord.Message, target_id: int | None) -> str:
+    prefix = ">>> TARGET MESSAGE (linked by user) <<<\n" if (target_id is not None and msg.id == target_id) else ""
     ts = msg.created_at.strftime("%Y-%m-%d %H:%M UTC")
-    content = msg.clean_content or "(no text content)"
+
+    content_parts = []
+    if msg.clean_content:
+        content_parts.append(msg.clean_content)
+    for embed in msg.embeds:
+        embed_text = _serialize_embed(embed)
+        if embed_text:
+            content_parts.append(embed_text)
+
+    content = "\n".join(content_parts) if content_parts else "(no text content)"
     if len(content) > _MAX_SINGLE_MSG_CHARS:
         content = content[:_MAX_SINGLE_MSG_CHARS] + "... [truncated]"
-    lines.append(f"[{ts}] {_author_label(msg)}: {content}")
-    return lines
+
+    return f"{prefix}[{ts}] {_author_label(msg)}: {content}"
 
 
 async def _append_message_parts(parts: list, msg: discord.Message, target_id: int | None,
-                                include_images: bool, budget: list[int]) -> None:
-    parts.extend(_message_lines(msg, target_id))
+                               include_images: bool, budget: list[int]) -> None:
+    parts.append(_message_line(msg, target_id))
     if not include_images or not msg.attachments:
         return
     blocks, warnings = await collect_image_attachments(msg)

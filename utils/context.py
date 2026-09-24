@@ -79,13 +79,18 @@ async def _resolve_referenced_message(ref: discord.MessageReference | None,
     except Exception:
         return None
 
+async def resolve_replied_message(message: discord.Message) -> discord.Message | None:
+    """Resolve the message this message directly replies to, if any."""
+    return await _resolve_referenced_message(message.reference, message.channel)
+
 async def _trace_outside_reply_chain(message: discord.Message, bot_user_id: int,
                                      known: dict[int, discord.Message],
                                      max_extra: int) -> list[discord.Message]:
-    """Edge case: the trigger replies to one of OUR bot's messages that is
-    not in the context window. Trace that reply thread backwards — bot answer,
-    the user message that triggered it, and so on — until the first user
-    prompt that is not itself a reply to the bot.
+    """Edge case: the trigger replies to a message that is not in the
+    context window. If the target is one of OUR bot's messages, trace that
+    reply thread backwards — bot answer, the user message that triggered it,
+    and so on — until the first user prompt that is not itself a reply to
+    the bot. If the target is any other message, include just that message.
 
     Returns the extra messages oldest -> newest, ready to be prepended.
     """
@@ -94,11 +99,11 @@ async def _trace_outside_reply_chain(message: discord.Message, bot_user_id: int,
     ref = message.reference
     if not ref or not ref.message_id or ref.message_id in known:
         return []
-
     target = await _resolve_referenced_message(ref, message.channel)
-    if target is None or target.author.id != bot_user_id:
+    if target is None:
         return []
-
+    if target.author.id != bot_user_id:
+        return [target]
     extras: list[discord.Message] = []
     current = target
     while True:
@@ -107,24 +112,18 @@ async def _trace_outside_reply_chain(message: discord.Message, bot_user_id: int,
         if len(extras) >= max_extra:
             break
         extras.append(current)
-
-        # current is a bot answer; find the user message that triggered it.
         user_msg = await _resolve_referenced_message(current.reference, message.channel)
         if user_msg is None or user_msg.id in known or any(m.id == user_msg.id for m in extras):
             break
         if len(extras) >= max_extra:
             break
         extras.append(user_msg)
-
-        # Continue only if that user message was itself a reply to our bot.
         next_bot = await _resolve_referenced_message(user_msg.reference, message.channel)
         if next_bot is None or next_bot.author.id != bot_user_id:
             break
         current = next_bot
-
-    extras.reverse()  # oldest -> newest
+    extras.reverse()
     return extras
-
 
 async def _fetch_history_window(message: discord.Message, bot_user_id: int,
                                 max_history: int) -> list[discord.Message]:
