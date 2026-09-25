@@ -1,13 +1,22 @@
+import re
 import logging
 from typing import Any
 from pydantic_ai import Agent, RunContext, ImageUrl
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
-from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID
+from pydantic_ai.capabilities import WebFetch
+from pydantic_ai_harness import (
+    SystemReminders, OutputGuardrail, GuardrailResult,
+    PromptInjectionDefender
+)
+from pydantic_ai_skills import SkillsCapability
+from pydantic_ai_harness.system_reminders import GoalReanchor
+from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
+
+from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, SKILLS_DIRS
 from core.memory import memory_remember, memory_recall_dynamic, memory_recall_knowledge
 from core.prompt_builder import BotDependencies, build_system_prompt
 from services.web_search import execute_web_search
-import services.skills as skills_module
 from services.game_db import game_database
 
 log = logging.getLogger("rag-bot")
@@ -17,6 +26,48 @@ llm_provider = OpenAIProvider(
     api_key=LLM_API_KEY or "no-key"
 )
 
+_EMOJI_RE = re.compile("["
+                       u"\U0001F600-\U0001F64F"
+                       u"\U0001F300-\U0001F5FF"
+                       u"\U0001F680-\U0001F6FF"
+                       u"\U0001F1E0-\U0001F1FF"
+                       u"\U00002702-\U000027B0"
+                       u"\U000024C2-\U0001F251"
+                       u"\U0001F900-\U0001F9FF"
+                       u"\U0001FA70-\U0001FAFF"
+                       u"\U00002600-\U000026FF"
+                       "]+", flags=re.UNICODE)
+
+
+def enforce_bot_style(output: str) -> GuardrailResult:
+    if not isinstance(output, str):
+        return GuardrailResult.allow()
+
+    if '—' in output:
+        return GuardrailResult.retry(
+            "You used an EM dash (—). This is strictly forbidden. Do not use em dashes, "
+            "and do not substitute them with regular dashes. Rewrite your response without them."
+        )
+
+    if _EMOJI_RE.search(output):
+        return GuardrailResult.retry(
+            "You used an emoji. This is strictly forbidden. Rewrite your response without any emojis."
+        )
+
+    return GuardrailResult.allow()
+
+
+_existing_skills_dirs = [str(d) for d in SKILLS_DIRS if d.is_dir()]
+_capabilities = [
+    SystemReminders(dynamic_reminders=[GoalReanchor()]),
+    OutputGuardrail(guard=enforce_bot_style),
+    WebFetch(local=True),
+    PromptInjectionDefender(block_high_risk=True),
+    RepairToolArguments()
+]
+if _existing_skills_dirs:
+    _capabilities.append(SkillsCapability(_existing_skills_dirs))
+
 
 def get_agent() -> Agent[BotDependencies, str]:
     model = OpenAIChatModel(LLM_MODEL_ID, provider=llm_provider)
@@ -24,34 +75,12 @@ def get_agent() -> Agent[BotDependencies, str]:
         model=model,
         deps_type=BotDependencies,
         output_type=str,
+        capabilities=_capabilities
     )
 
     @agent.system_prompt
     def dynamic_system_prompt(ctx: RunContext[BotDependencies]) -> str:
         return build_system_prompt(ctx.deps)
-
-    @agent.tool
-    async def activate_skill(ctx: RunContext[BotDependencies], skill_name: str) -> str:
-        """
-        Activates a specific Agent Skill. Use this when the user explicitly asks to use a skill,
-        or when a complex task perfectly matches a skill's description.
-        """
-        manager = skills_module.skill_manager
-        if not manager:
-            return "Skill manager not initialized."
-
-        skill = manager.get_skill(skill_name)
-        if not skill:
-            available = ", ".join(manager.skills.keys()) if manager.skills else "None"
-            return f"Skill '{skill_name}' not found. Available skills: {available}"
-
-        if skill not in ctx.deps.active_skills:
-            ctx.deps.active_skills.append(skill)
-
-        return (
-            f"Skill '{skill.name}' is now ACTIVE. The instructions below are MANDATORY "
-            f"for this task. Follow them exactly:\n\n{skill.content}"
-        )
 
     @agent.tool
     async def search_game_knowledge(ctx: RunContext[BotDependencies], query: str) -> str:

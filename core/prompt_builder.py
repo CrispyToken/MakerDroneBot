@@ -1,8 +1,6 @@
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from config import SYSTEM_PROMPT_FILE
-from services.skills import Skill
-import services.skills as skills_module
 import discord
 
 log = logging.getLogger("rag-bot")
@@ -18,7 +16,6 @@ class BotDependencies:
     server_channels: str
     user_roles: list[str] | None
     is_staff: bool
-    active_skills: list = field(default_factory=list)
 
 
 def load_system_prompt() -> str:
@@ -101,27 +98,10 @@ def _user_profile_section(profile: dict) -> str:
 
     return section
 
-
-def _active_skill_section(skill: Skill) -> str:
-    return (
-        f"\n\n[ACTIVE SKILL: {skill.name}]\n"
-        "This skill was explicitly activated for the current task. Its instructions "
-        "are MANDATORY and take precedence over your defaults. Follow them exactly, "
-        "from the very beginning of your work.\n"
-        f"--- BEGIN SKILL {skill.name} ---\n{skill.content}\n--- END SKILL {skill.name} ---"
-    )
-
-
 def build_system_prompt(deps: BotDependencies) -> str:
     prompt = _apply_placeholders(load_system_prompt(), deps)
     prompt += _request_authority_section(deps)
     prompt += _channel_list_section(deps)
     if deps.user_profile:
         prompt += _user_profile_section(deps.user_profile)
-    if skills_module.skill_manager:
-        skills_context = skills_module.skill_manager.get_skills_prompt()
-        if skills_context:
-            prompt += f"\n\n{skills_context}"
-    for skill in deps.active_skills:
-        prompt += _active_skill_section(skill)
     return prompt

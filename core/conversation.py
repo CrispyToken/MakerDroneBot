@@ -7,9 +7,6 @@ from core.db import get_user_profile, get_staff_role_ids
 from utils.context import build_server_channel_list, get_conversation_context, resolve_replied_message
 from utils.attachments import collect_image_attachments, collect_text_attachments
 from utils.formatting import send_final_answer
-import re
-from services.skills import Skill
-import services.skills as skills_module
 from core.llm_reasoning import chat_reasoning
 from core.console import print_user_line
 from core.locks import llm_lock, track_llm_task, active_llm_task_label
@@ -17,21 +14,6 @@ from config import CONVERSATION_MAX_HISTORY
 from pydantic_ai import ModelResponse, TextPart, ToolCallPart
 
 log = logging.getLogger("rag-bot")
-
-def detect_explicit_skills(question: str) -> list[Skill]:
-    manager = skills_module.skill_manager
-    if not manager or not manager.skills:
-        return []
-    q = question.lower()
-    found = []
-    for name, skill in manager.skills.items():
-        patterns = [
-            rf'\b(?:use|using|activate|apply|employ|run)\s+(?:the\s+)?{re.escape(name)}(?:\s+skill)?\b',
-            rf'\bwith\s+(?:the\s+)?{re.escape(name)}\s+skill\b',
-        ]
-        if any(re.search(p, q) for p in patterns):
-            found.append(skill)
-    return found
 
 def _busy_message(busy_label: str | None) -> str:
     if busy_label:
@@ -61,7 +43,7 @@ def _format_current_time() -> str:
     )
 
 
-async def _gather_dependencies(bot: discord.Client, message: discord.Message, active_skills: list[Skill]) -> BotDependencies:
+async def _gather_dependencies(bot: discord.Client, message: discord.Message) -> BotDependencies:
     profile = await get_user_profile(message.author.id)
     channel_name = message.channel.name if message.guild else "Direct Message"
     channel_topic = getattr(message.channel, 'topic', None) or ""
@@ -85,7 +67,6 @@ async def _gather_dependencies(bot: discord.Client, message: discord.Message, ac
         server_channels=server_channels,
         user_roles=user_roles,
         is_staff=is_staff,
-        active_skills=active_skills,
     )
 
 async def _build_prompt_text(message: discord.Message, bot_user_id: int, question: str, text_blocks: list[str]) -> str:
@@ -194,10 +175,6 @@ async def answer_question(bot: discord.Client, message: discord.Message, questio
             log.info("Attachment warning: %s", warning)
 
         user_question = question.strip()
-        active_skills = detect_explicit_skills(user_question)
-        if active_skills:
-            log.info("Explicit skill activation: %s", ", ".join(s.name for s in active_skills))
-
         question_for_model = user_question
         if not question_for_model:
             if images or replied_images:
@@ -208,7 +185,7 @@ async def answer_question(bot: discord.Client, message: discord.Message, questio
             await message.reply("Provide a question or attach an image/text file.")
             return
 
-        deps = await _gather_dependencies(bot, message, active_skills)
+        deps = await _gather_dependencies(bot, message)
         user_content = await _assemble_user_content(
             message, bot.user.id, bot.user.display_name, question_for_model, text_blocks, images,
             replied_to, replied_text_blocks, replied_images

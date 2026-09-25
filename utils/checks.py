@@ -1,4 +1,3 @@
-import discord
 from discord.ext import commands
 from core.db import get_staff_role_ids
 

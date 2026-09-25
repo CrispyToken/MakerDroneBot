@@ -5,14 +5,11 @@ import os
 from pathlib import Path
 import discord
 from discord.ext import commands
-from config import TOKEN, COMMAND_PREFIX
+from config import COMMAND_PREFIX
 from core.db import init_db, track_user, get_monitored_channels, is_channel_permitted
 from core.memory import warmup_memory
 from services.monitoring import monitoring_scheduler, emergency_monitoring
 from core.conversation import answer_question
-from config import SKILLS_DIRS
-from services.skills import SkillManager
-import services.skills as skills_module
 from services.game_db import load_game_database
 
 log = logging.getLogger("rag-bot")
@@ -24,10 +21,6 @@ intents.members = True
 class MakerDroneBot(commands.Bot):
     async def setup_hook(self) -> None:
         await init_db()
-
-        skills_module.skill_manager = SkillManager(SKILLS_DIRS)
-        log.info("Loaded %s Agent Skills.", len(skills_module.skill_manager.skills))
-
         cogs_dir = Path(__file__).parent / "cogs"
         for filename in os.listdir(cogs_dir):
             if filename.endswith(".py") and not filename.startswith("__"):

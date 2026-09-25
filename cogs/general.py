@@ -63,7 +63,7 @@ class GeneralCog(commands.Cog):
 
     @commands.command(name="status", help="Shows LLM backend and memory status.", usage="status")
     async def status_cmd(self, ctx: commands.Context):
-        llm_ok = True;
+        llm_ok = True
         llm_error = None
         try:
             timeout = aiohttp.ClientTimeout(total=10)
@@ -73,7 +73,7 @@ class GeneralCog(commands.Cog):
                     llm_ok = response.status == 200
                     if not llm_ok: llm_error = await response.text()
         except Exception as e:
-            llm_ok = False;
+            llm_ok = False
             llm_error = str(e)
         status = (
             f"LLM Base URL: `{LLM_BASE_URL}`\n"
