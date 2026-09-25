@@ -78,36 +78,54 @@ async def _append_message_parts(parts: list, msg: discord.Message, target_id: in
 
 async def _build_window_parts(window: list[discord.Message], target_id: int | None,
                               images_for: str) -> list:
-    """Assemble transcript parts oldest -> newest.
+    """Assemble transcript parts oldest -> newest, then cap by total length.
 
-    images_for="window" includes every message's images; "target" includes only
-    the linked message's images. Image blocks keep their position directly after
-    the message line they belong to, so the model can attribute every image to
-    its message even after provider-side reframing.
+    Parts are grouped per message so a message's text and its images are kept
+    or dropped together. When the combined transcript exceeds the output
+    budget, the OLDEST messages are dropped first. This preserves the newest
+    content, which is what a channel read is asking about, and for a
+    message-link read it also keeps the linked (target) message, since only
+    the older context ahead of it is removed.
     """
-    parts: list = []
+    groups: list[list] = []
     budget = [CHANNEL_READ_MAX_IMAGES]
-    for msg in window:
+    target_group = -1
+    for index, msg in enumerate(window):
         include = images_for == "window" or (images_for == "target" and msg.id == target_id)
-        await _append_message_parts(parts, msg, target_id, include, budget)
+        msg_parts: list = []
+        await _append_message_parts(msg_parts, msg, target_id, include, budget)
+        if target_id is not None and msg.id == target_id:
+            target_group = index
+        groups.append(msg_parts)
 
-    remaining = _MAX_OUTPUT_CHARS
-    capped: list = []
-    for part in parts:
-        if isinstance(part, str):
-            if remaining <= 0:
-                break
-            if len(part) > remaining:
-                capped.append(part[:remaining] + "... [truncated]")
-                remaining = 0
-                continue
-            remaining -= len(part)
-        elif remaining <= 0:
-            break
-        capped.append(part)
-    if len(capped) < len(parts):
-        capped.append("[Transcript truncated due to length.]")
-    return capped
+    def _text_len(parts: list) -> int:
+        return sum(len(p) for p in parts if isinstance(p, str))
+
+    total = sum(_text_len(g) for g in groups)
+    keep = [True] * len(groups)
+    index = 0
+    while total > _MAX_OUTPUT_CHARS and index < len(groups):
+        if index != target_group:
+            total -= _text_len(groups[index])
+            keep[index] = False
+        index += 1
+    index = len(groups) - 1
+    while total > _MAX_OUTPUT_CHARS and index >= 0:
+        if index != target_group:
+            total -= _text_len(groups[index])
+            keep[index] = False
+        index -= 1
+
+    parts: list = []
+    dropped = 0
+    for kept, msg_parts in zip(keep, groups):
+        if kept:
+            parts.extend(msg_parts)
+        else:
+            dropped += 1
+    if dropped:
+        parts.insert(0, f"[Transcript truncated: {dropped} older message(s) omitted due to length.]")
+    return parts
 
 
 async def read_channel_content(bot: discord.Client, guild_id: int, channel_input: str,

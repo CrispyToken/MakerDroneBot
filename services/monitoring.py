@@ -296,7 +296,7 @@ async def run_monitoring_evaluation(bot: discord.Client, sections: list[list[dic
         log.info("Monitoring decision: %s", decision_text[:200])
 
     if decision_text.startswith("IGNORE"):
-        log.info("Monitoring: Decision is IGNORE.")
+        pass
     elif decision_text.startswith("REMEMBER:"):
         fact = decision_text[len("REMEMBER:"):].strip()
         if fact:
