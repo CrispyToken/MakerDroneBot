@@ -9,7 +9,7 @@ from pydantic_ai_harness import (
     SystemReminders, OutputGuardrail, GuardrailResult,
     PromptInjectionDefender
 )
-from pydantic_ai_skills import SkillsCapability
+from pydantic_ai_skills import SkillsCapability, GitSkillsRegistry
 from pydantic_ai_harness.system_reminders import GoalReanchor
 from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
 
@@ -43,16 +43,15 @@ def enforce_bot_style(output: str) -> GuardrailResult:
     if not isinstance(output, str):
         return GuardrailResult.allow()
 
-    if '—' in output:
-        return GuardrailResult.retry(
-            "You used an EM dash (—). This is strictly forbidden. Do not use em dashes, "
-            "and do not substitute them with regular dashes. Rewrite your response without them."
-        )
+    cleaned = output
+    # Replace em dashes with standard hyphens
+    cleaned = cleaned.replace('—', '-')
+    # Strip emojis completely
+    cleaned = _EMOJI_RE.sub('', cleaned)
 
-    if _EMOJI_RE.search(output):
-        return GuardrailResult.retry(
-            "You used an emoji. This is strictly forbidden. Rewrite your response without any emojis."
-        )
+    # If we changed anything, return the sanitized string instantly
+    if cleaned != output:
+        return GuardrailResult.replace(cleaned)
 
     return GuardrailResult.allow()
 
@@ -65,8 +64,17 @@ _capabilities = [
     PromptInjectionDefender(block_high_risk=True),
     RepairToolArguments()
 ]
+_registries = [
+    # Dynamically pull Anthropic's official skills at runtime
+    GitSkillsRegistry('https://github.com/anthropics/skills', path='skills')
+]
+
 if _existing_skills_dirs:
-    _capabilities.append(SkillsCapability(_existing_skills_dirs))
+    # Combine local directories with remote registries
+    _capabilities.append(SkillsCapability(_existing_skills_dirs, registries=_registries))
+else:
+    # If no local dirs exist, use the remote registries
+    _capabilities.append(SkillsCapability(registries=_registries))
 
 
 def get_agent() -> Agent[BotDependencies, str]:
