@@ -148,7 +148,7 @@ async def read_channel_content(bot: discord.Client, guild_id: int, channel_input
             except discord.NotFound:
                 return ["The channel in the provided link could not be found."]
             except discord.Forbidden:
-                return ["The bot does not have access to the channel in the provided link."]
+                return ["Missing access to the channel in the provided link."]
             except Exception:
                 return ["An error occurred while accessing the channel in the provided link."]
         if not isinstance(channel, discord.abc.Messageable):
@@ -158,19 +158,24 @@ async def read_channel_content(bot: discord.Client, guild_id: int, channel_input
         except discord.NotFound:
             return ["The specific message in the link could not be found or was deleted."]
         except discord.Forbidden:
-            return ["The bot does not have permission to read the specific message in the link."]
+            return ["Missing access to read the specific message in the link."]
         except Exception:
             return ["An error occurred while fetching the specific message."]
 
         limit = CHANNEL_READ_WINDOW_SIZE
         half = limit // 2
-        before_msgs = []
-        async for msg in channel.history(limit=half, before=target_msg):
-            before_msgs.append(msg)
-        before_msgs.reverse()  # newest-first -> chronological
-        after_msgs = []
-        async for msg in channel.history(limit=half, after=target_msg):
-            after_msgs.append(msg)
+        try:
+            before_msgs = []
+            async for msg in channel.history(limit=half, before=target_msg):
+                before_msgs.append(msg)
+            before_msgs.reverse()
+            after_msgs = []
+            async for msg in channel.history(limit=half, after=target_msg):
+                after_msgs.append(msg)
+        except discord.Forbidden:
+            return ["PERMANENT FAILURE: Missing access to read the history around that message. Do not retry. Inform the user."]
+        except discord.HTTPException:
+            return ["An error occurred while reading the channel history around the linked message. Do not retry."]
         window = before_msgs + [target_msg] + after_msgs
         parts = await _build_window_parts(window, target_msg.id, "target")
         header = (f"Transcript of #{channel.name} around the linked message "
@@ -178,6 +183,8 @@ async def read_channel_content(bot: discord.Client, guild_id: int, channel_input
         return [header] + parts
 
     channel_input = channel_input.strip()
+    if channel_input.startswith("#"):
+        channel_input = channel_input[1:]
     channel = None
     mention_match = re.match(r"^<#(\d+)>$", channel_input)
     if mention_match:
@@ -199,16 +206,23 @@ async def read_channel_content(bot: discord.Client, guild_id: int, channel_input
         except discord.NotFound:
             return ["The specified channel could not be found."]
         except discord.Forbidden:
-            return ["The bot does not have access to the specified channel."]
+            return [
+                "PERMANENT FAILURE: Missing access the specified channel. Do not retry. Inform the user you cannot access it."]
         except Exception:
             return ["An error occurred while accessing the specified channel."]
     if channel is None or not isinstance(channel, discord.abc.Messageable):
-        return ["The specified channel could not be found or is not readable."]
+        return ["The specified channel could not be found or is not readable. Do not retry. Inform the user."]
 
     window = []
-    async for msg in channel.history(limit=CHANNEL_READ_WINDOW_SIZE):
-        window.append(msg)
-    window.reverse()  # history returns newest-first; reverse to chronological
+    try:
+        async for msg in channel.history(limit=CHANNEL_READ_WINDOW_SIZE):
+            window.append(msg)
+    except discord.Forbidden:
+        return [
+            f"PERMANENT FAILURE: Missing access to read #{channel.name}. Do not retry. Inform the user you cannot access this channel."]
+    except discord.HTTPException:
+        return [f"An error occurred while reading #{channel.name}. Do not retry."]
+    window.reverse()
     if not window:
         return [f"The channel #{getattr(channel, 'name', 'unknown')} has no readable messages."]
     parts = await _build_window_parts(window, None, "window")
