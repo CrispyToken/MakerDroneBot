@@ -1,15 +1,18 @@
 import re
 import logging
+from pathlib import Path
 from typing import Any
 from pydantic_ai import Agent, RunContext, ImageUrl
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.capabilities import WebFetch
 from pydantic_ai_harness import (
     SystemReminders, OutputGuardrail, GuardrailResult,
-    PromptInjectionDefender
+    PromptInjectionDefender, CodeMode
 )
 from pydantic_ai_skills import SkillsCapability, GitSkillsRegistry
+from pydantic_monty import MountDir
 from pydantic_ai_harness.system_reminders import GoalReanchor
 from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
 
@@ -55,6 +58,8 @@ def enforce_bot_style(output: str) -> GuardrailResult:
 
     return GuardrailResult.allow()
 
+_SANDBOX_SCRATCHPAD = Path("data/sandbox_scratchpad").resolve()
+_SANDBOX_SCRATCHPAD.mkdir(parents=True, exist_ok=True)
 
 _existing_skills_dirs = [str(d) for d in SKILLS_DIRS if d.is_dir()]
 _capabilities = [
@@ -62,7 +67,11 @@ _capabilities = [
     OutputGuardrail(guard=enforce_bot_style),
     WebFetch(local=True),
     PromptInjectionDefender(block_high_risk=True),
-    RepairToolArguments()
+    RepairToolArguments(),
+    CodeMode(
+        tools=[],
+        mount=MountDir(host_path=str(_SANDBOX_SCRATCHPAD), virtual_path='/scratchpad', mode='read-write')
+    )
 ]
 _registries = [
     # Dynamically pull Anthropic's official skills at runtime
@@ -78,12 +87,17 @@ else:
 
 
 def get_agent() -> Agent[BotDependencies, str]:
-    model = OpenAIChatModel(LLM_MODEL_ID, provider=llm_provider)
+    model = OpenAIChatModel(
+        LLM_MODEL_ID,
+        provider=llm_provider,
+        profile=OpenAIModelProfile(openai_chat_supports_multiple_system_messages=False)
+    )
     agent = Agent(
         model=model,
         deps_type=BotDependencies,
         output_type=str,
-        capabilities=_capabilities
+        capabilities=_capabilities,
+        retries=3
     )
 
     @agent.system_prompt

@@ -18,7 +18,7 @@ ebooklib>=0.18
 # RAG / Embeddings
 fastembed>=0.3.0
 pydantic-ai>=0.1.0
-pydantic-ai-harness[skills,prompt-injection-defender]
+pydantic-ai-harness[skills,prompt-injection-defender,codemode]
 pydantic-ai-skills[git]
 pydantic-ai-slim[web-fetch]
 lightrag-hku>=1.5.0
