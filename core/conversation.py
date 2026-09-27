@@ -6,7 +6,7 @@ from core.agent import get_agent, BotDependencies
 from core.db import get_user_profile, get_staff_role_ids
 from utils.context import build_server_channel_list, get_conversation_context, resolve_replied_message
 from utils.attachments import collect_image_attachments, collect_text_attachments
-from utils.formatting import send_final_answer
+from utils.formatting import send_final_answer, sanitize_bot_style
 from core.llm_reasoning import chat_reasoning
 from core.console import print_user_line
 from core.locks import llm_lock, track_llm_task, active_llm_task_label
@@ -139,7 +139,7 @@ async def _execute_agent(message: discord.Message, user_content: str | list, dep
                             reply_text = "\n".join(t for t in text_parts if t and t.strip()).strip()
 
                             if reply_text and has_tool_calls:
-                                await message.reply(reply_text, mention_author=False)
+                                await message.reply(sanitize_bot_style(reply_text), mention_author=False)
 
                     if agent_run.result is not None:
                         return agent_run.result.output

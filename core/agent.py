@@ -21,6 +21,7 @@ from core.memory import memory_remember, memory_recall_dynamic, memory_recall_kn
 from core.prompt_builder import BotDependencies, build_system_prompt
 from services.web_search import execute_web_search
 from services.game_db import game_database
+from utils.formatting import sanitize_bot_style
 
 log = logging.getLogger("rag-bot")
 
@@ -29,33 +30,12 @@ llm_provider = OpenAIProvider(
     api_key=LLM_API_KEY or "no-key"
 )
 
-_EMOJI_RE = re.compile("["
-                       u"\U0001F600-\U0001F64F"
-                       u"\U0001F300-\U0001F5FF"
-                       u"\U0001F680-\U0001F6FF"
-                       u"\U0001F1E0-\U0001F1FF"
-                       u"\U00002702-\U000027B0"
-                       u"\U000024C2-\U0001F251"
-                       u"\U0001F900-\U0001F9FF"
-                       u"\U0001FA70-\U0001FAFF"
-                       u"\U00002600-\U000026FF"
-                       "]+", flags=re.UNICODE)
-
-
 def enforce_bot_style(output: str) -> GuardrailResult:
     if not isinstance(output, str):
         return GuardrailResult.allow()
-
-    cleaned = output
-    # Replace em dashes with standard hyphens
-    cleaned = cleaned.replace('—', '-')
-    # Strip emojis completely
-    cleaned = _EMOJI_RE.sub('', cleaned)
-
-    # If we changed anything, return the sanitized string instantly
+    cleaned = sanitize_bot_style(output)
     if cleaned != output:
         return GuardrailResult.replace(cleaned)
-
     return GuardrailResult.allow()
 
 _SANDBOX_SCRATCHPAD = Path("data/sandbox_scratchpad").resolve()
