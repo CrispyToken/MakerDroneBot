@@ -16,6 +16,7 @@ from pydantic_monty import MountDir
 from pydantic_ai_harness.system_reminders import GoalReanchor
 from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
 
+from openai import AsyncOpenAI
 from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, SKILLS_DIRS
 from core.memory import memory_remember, memory_recall_dynamic, memory_recall_knowledge
 from core.prompt_builder import BotDependencies, build_system_prompt
@@ -26,8 +27,11 @@ from utils.formatting import sanitize_bot_style
 log = logging.getLogger("rag-bot")
 
 llm_provider = OpenAIProvider(
-    base_url=LLM_BASE_URL,
-    api_key=LLM_API_KEY or "no-key"
+    openai_client=AsyncOpenAI(
+        base_url=LLM_BASE_URL,
+        api_key=LLM_API_KEY or "no-key",
+        timeout=9000.0,
+    )
 )
 
 def enforce_bot_style(output: str) -> GuardrailResult:
