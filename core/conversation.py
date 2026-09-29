@@ -12,6 +12,7 @@ from core.console import print_user_line
 from core.locks import llm_lock, track_llm_task, active_llm_task_label
 from config import CONVERSATION_MAX_HISTORY
 from pydantic_ai import ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 log = logging.getLogger("rag-bot")
 
@@ -115,7 +116,7 @@ async def _assemble_user_content(message: discord.Message, bot_user_id: int, bot
         return history_text + prompt_text
 
 async def _execute_agent(message: discord.Message, user_content: str | list, deps: BotDependencies) -> str | None:
-    agent = get_agent()
+    agent = await get_agent()
     if isinstance(user_content, str):
         print_user_line(user_content)
     else:
@@ -147,6 +148,11 @@ async def _execute_agent(message: discord.Message, user_content: str | list, dep
     except asyncio.CancelledError:
         log.info("Chat turn interrupted by staff command.")
         return None
+    except UnexpectedModelBehavior as e:
+        if "exceeded before any response was generated" in str(e):
+            log.warning("Model exhausted output budget on thinking: %s", e)
+            return "I ran out of output space while thinking through that task. Please try breaking the request down into smaller steps."
+        raise
     finally:
         llm_lock.release()
 

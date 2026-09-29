@@ -1,5 +1,6 @@
 import re
 import logging
+import aiohttp
 from pathlib import Path
 from typing import Any
 from pydantic_ai import Agent, RunContext, ImageUrl
@@ -50,7 +51,7 @@ _capabilities = [
     SystemReminders(dynamic_reminders=[GoalReanchor()]),
     OutputGuardrail(guard=enforce_bot_style),
     WebFetch(local=True),
-    PromptInjectionDefender(block_high_risk=True),
+    PromptInjectionDefender(),
     RepairToolArguments(),
     CodeMode(
         tools=[],
@@ -70,11 +71,35 @@ else:
     _capabilities.append(SkillsCapability(registries=_registries))
 
 
-def get_agent() -> Agent[BotDependencies, str]:
+async def _get_server_context_size() -> int:
+    base = LLM_BASE_URL.rsplit("/v1", 1)[0]
+    url = f"{base}/slots"
+    headers = {"Authorization": f"Bearer {LLM_API_KEY}"} if LLM_API_KEY else {}
+    try:
+        timeout = aiohttp.ClientTimeout(total=5)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    slots = await resp.json()
+                    if slots and isinstance(slots, list):
+                        n_ctx = slots[0].get("n_ctx")
+                        if isinstance(n_ctx, int) and n_ctx > 0:
+                            return n_ctx
+    except Exception:
+        log.warning("Could not query server context size; using fallback 8192.")
+    return 8192
+
+
+async def get_agent() -> Agent[BotDependencies, str]:
+    ctx_size = await _get_server_context_size()
     model = OpenAIChatModel(
         LLM_MODEL_ID,
         provider=llm_provider,
-        profile=OpenAIModelProfile(openai_chat_supports_multiple_system_messages=False)
+        profile=OpenAIModelProfile(
+            openai_chat_supports_multiple_system_messages=False,
+            context_window=ctx_size,
+        ),
+        settings={"max_tokens": ctx_size // 4}
     )
     agent = Agent(
         model=model,
