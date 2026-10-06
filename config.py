@@ -57,6 +57,7 @@ LLM_INGEST_MODEL_PATH = _strip_vendor_prefix(raw_ingest_model) if raw_ingest_mod
 LLM_MODEL_ID = "local-model"
 
 LLM_SERVER_MANAGER = os.getenv("LLM_SERVER_MANAGER", "external").lower()
+LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "32768"))
 LLAMA_SERVER_BIN = os.getenv("LLAMA_SERVER_BIN", "llama-server")
 LLAMA_PORT = urlparse(os.getenv("LLM_ENDPOINT", "http://127.0.0.1:8000/v1")).port or 8000
 

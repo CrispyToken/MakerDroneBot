@@ -18,7 +18,7 @@ from pydantic_ai_harness.system_reminders import GoalReanchor
 from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
 
 from openai import AsyncOpenAI
-from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, SKILLS_DIRS
+from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, SKILLS_DIRS, LLM_SERVER_MANAGER, LLM_CONTEXT_WINDOW
 from core.memory import memory_remember, memory_recall_dynamic, memory_recall_knowledge
 from core.prompt_builder import BotDependencies, build_system_prompt
 from services.web_search import execute_web_search
@@ -72,6 +72,9 @@ else:
 
 
 async def _get_server_context_size() -> int:
+    if LLM_SERVER_MANAGER != "llamacpp":
+        return LLM_CONTEXT_WINDOW
+
     base = LLM_BASE_URL.rsplit("/v1", 1)[0]
     url = f"{base}/slots"
     headers = {"Authorization": f"Bearer {LLM_API_KEY}"} if LLM_API_KEY else {}
@@ -86,8 +89,8 @@ async def _get_server_context_size() -> int:
                         if isinstance(n_ctx, int) and n_ctx > 0:
                             return n_ctx
     except Exception:
-        log.warning("Could not query server context size; using fallback 8192.")
-    return 8192
+        log.warning("Could not query server context size; using fallback %d.", LLM_CONTEXT_WINDOW)
+    return LLM_CONTEXT_WINDOW
 
 
 async def get_agent() -> Agent[BotDependencies, str]:

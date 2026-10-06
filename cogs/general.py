@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 import aiohttp
-from config import COMMAND_PREFIX, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, DISCORD_CHAR_LIMIT
+from config import COMMAND_PREFIX, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL_ID, DISCORD_CHAR_LIMIT, LLM_SERVER_MANAGER
 
 
 class GeneralCog(commands.Cog):
@@ -83,6 +83,8 @@ class GeneralCog(commands.Cog):
         engine = getattr(self.bot, "engine_manager", None)
         if engine is not None:
             status += f"Loaded model: `{engine.current_model_rel_path}`\n"
+        else:
+            status += f"Engine: `External ({LLM_SERVER_MANAGER})`\n"
         status += (
             f"Discord char limit: `{DISCORD_CHAR_LIMIT}`\n"
             f"Memory backend: `LightRAG` (workspaces: `knowledge`, `dynamic`)"
