@@ -63,7 +63,7 @@ async def send_final_answer(message: discord.Message, answer: str):
         for i, part in enumerate(parts, 1):
             await message.reply(f"Part {i}/{len(parts)}\n{part}")
         return
-    file = discord.File(BytesIO(answer.encode("utf-8")), filename="response.txt")
+    file = discord.File(BytesIO(answer.encode("utf-8")), filename="response.md")
     try:
         await message.reply(
             f"The response was {length} characters, which is too long to send directly. "
