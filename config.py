@@ -44,8 +44,9 @@ def _strip_vendor_prefix(raw: str) -> str:
 raw_model = os.getenv("LLM_MODEL", "local-model")
 LLM_DEFAULT_MODEL_PATH = _strip_vendor_prefix(raw_model)
 
-CONVERSATION_MAX_HISTORY = int(os.getenv("CONVERSATION_MAX_HISTORY", "20"))
-CONVERSATION_MAX_CHAIN_EXTRA = int(os.getenv("CONVERSATION_MAX_CHAIN_EXTRA", "10"))
+CONVERSATION_BASE_WINDOW = int(os.getenv("CONVERSATION_BASE_WINDOW", "20"))
+CONVERSATION_MAX_WINDOW = int(os.getenv("CONVERSATION_MAX_WINDOW", "50"))
+CONVERSATION_MAX_HISTORY_IMAGES = int(os.getenv("CONVERSATION_MAX_HISTORY_IMAGES", "4"))
 CHANNEL_READ_WINDOW_SIZE = int(os.getenv("CHANNEL_READ_WINDOW_SIZE", "20"))
 CHANNEL_READ_MAX_IMAGES = int(os.getenv("CHANNEL_READ_MAX_IMAGES", "6"))
 

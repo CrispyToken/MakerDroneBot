@@ -1,13 +1,20 @@
 import asyncio
 import logging
+import re
+
 import discord
+from pydantic_ai import ImageUrl
+
+from config import CONVERSATION_BASE_WINDOW, CONVERSATION_MAX_WINDOW, CONVERSATION_MAX_HISTORY_IMAGES
+from core.db import get_talk_window_start, set_talk_window_start
+from utils.attachments import collect_image_attachments, _is_image_attachment
 from utils.formatting import clean_answer_text
-from config import CONVERSATION_MAX_CHAIN_EXTRA
 
 log = logging.getLogger("rag-bot")
 
 _HISTORY_RETRIES = 3
 _RETRY_DELAY_SECONDS = 1.5
+_PART_PREFIX_RE = re.compile(r"^Part \d+/\d+\s*\n?")
 
 
 def build_server_channel_list(guild: discord.Guild) -> str:
@@ -21,8 +28,44 @@ def build_server_channel_list(guild: discord.Guild) -> str:
     if not channels: return "(No accessible channels)"
     return "\n".join(f"- {c}" for c in channels)
 
-def _format_ts(msg: discord.Message) -> str:
-    return msg.created_at.strftime("%Y-%m-%d %H:%M UTC")
+
+def _author_label(msg: discord.Message) -> str:
+    author = msg.author
+    if isinstance(author, discord.Member) and author.nick:
+        display_name = author.nick
+    elif getattr(author, "global_name", None):
+        display_name = author.global_name
+    else:
+        display_name = author.name
+    return f"{display_name} (@{author.name})"
+
+
+def _message_body(msg: discord.Message, bot_user_id: int) -> str:
+    text = msg.clean_content
+    if msg.author.id == bot_user_id:
+        text = _PART_PREFIX_RE.sub("", clean_answer_text(text))
+    parts = [text] if text else []
+    has_image = any(_is_image_attachment(att) for att in msg.attachments)
+    has_file = any(not _is_image_attachment(att) for att in msg.attachments)
+
+    if has_image:
+        parts.append("[image attached]")
+    if has_file:
+        parts.append("[file attached]")
+    if not parts:
+        parts.append("(no content)")
+    return "\n".join(parts)
+
+
+def format_turn_line(msg: discord.Message, bot_user_id: int) -> str:
+    """Unified metadata line, used for BOTH historical messages and the current
+    trigger message so the next turn's prompt prefix matches byte-for-byte."""
+    ts = msg.created_at.strftime("%Y-%m-%d %H:%M UTC")
+    header = f"[{ts} | id:{msg.id}] {_author_label(msg)}"
+    ref = msg.reference
+    if ref and ref.message_id:
+        header += f" (in response to id:{ref.message_id})"
+    return f"{header}: {_message_body(msg, bot_user_id)}"
 
 
 def _is_eligible(msg: discord.Message, bot_user_id: int) -> bool:
@@ -34,34 +77,6 @@ def _is_eligible(msg: discord.Message, bot_user_id: int) -> bool:
         return False
     return True
 
-
-def _message_text(msg: discord.Message, bot_user_id: int) -> str:
-    content = msg.clean_content
-    if not content and msg.attachments:
-        has_image = any(att.content_type and att.content_type.startswith("image/") for att in msg.attachments)
-        content = "[User attached an image]" if has_image else "[User attached a file]"
-    if not content:
-        content = "(no content)"
-    if msg.author.id == bot_user_id:
-        content = clean_answer_text(content)
-    return content
-
-
-def _reply_suffix(msg: discord.Message, known: dict[int, discord.Message]) -> str:
-    ref = msg.reference
-    if not ref or not ref.message_id:
-        return ""
-    target = ref.resolved or known.get(ref.message_id)
-    if isinstance(target, discord.Message):
-        return f" (in reply to {target.author.display_name})"
-    if target is not None:
-        return " (in reply to a deleted message)"
-    return " (in reply to an earlier message not shown here)"
-
-
-def _format_line(msg: discord.Message, bot_user_id: int, known: dict[int, discord.Message]) -> str:
-    return (f"[{_format_ts(msg)}] {msg.author.display_name}"
-            f"{_reply_suffix(msg, known)}: {_message_text(msg, bot_user_id)}")
 
 async def _resolve_referenced_message(ref: discord.MessageReference | None,
                                       channel: discord.abc.Messageable) -> discord.Message | None:
@@ -79,70 +94,22 @@ async def _resolve_referenced_message(ref: discord.MessageReference | None,
     except Exception:
         return None
 
+
 async def resolve_replied_message(message: discord.Message) -> discord.Message | None:
     """Resolve the message this message directly replies to, if any."""
     return await _resolve_referenced_message(message.reference, message.channel)
 
-async def _trace_outside_reply_chain(message: discord.Message, bot_user_id: int,
-                                     known: dict[int, discord.Message],
-                                     max_extra: int) -> list[discord.Message]:
-    """Edge case: the trigger replies to a message that is not in the
-    context window. If the target is one of OUR bot's messages, trace that
-    reply thread backwards — bot answer, the user message that triggered it,
-    and so on — until the first user prompt that is not itself a reply to
-    the bot. If the target is any other message, include just that message.
 
-    Returns the extra messages oldest -> newest, ready to be prepended.
-    """
-    if max_extra <= 0:
-        return []
-    ref = message.reference
-    if not ref or not ref.message_id or ref.message_id in known:
-        return []
-    target = await _resolve_referenced_message(ref, message.channel)
-    if target is None:
-        return []
-    if target.author.id != bot_user_id:
-        return [target]
-    extras: list[discord.Message] = []
-    current = target
-    while True:
-        if current is None or current.id in known or any(m.id == current.id for m in extras):
-            break
-        if len(extras) >= max_extra:
-            break
-        extras.append(current)
-        user_msg = await _resolve_referenced_message(current.reference, message.channel)
-        if user_msg is None or user_msg.id in known or any(m.id == user_msg.id for m in extras):
-            break
-        if len(extras) >= max_extra:
-            break
-        extras.append(user_msg)
-        next_bot = await _resolve_referenced_message(user_msg.reference, message.channel)
-        if next_bot is None or next_bot.author.id != bot_user_id:
-            break
-        current = next_bot
-    extras.reverse()
-    return extras
-
-async def _fetch_history_window(message: discord.Message, bot_user_id: int,
-                                max_history: int) -> list[discord.Message]:
-    """Fetch the recent-message window, retrying on transient Discord 5xx errors.
-
-    Returns an empty window if Discord keeps failing after all retries, so a
-    temporary API outage degrades gracefully instead of crashing the turn.
-    """
+async def _fetch_recent_pool(message: discord.Message) -> list[discord.Message]:
+    """Latest CONVERSATION_MAX_WINDOW messages before the trigger, oldest first.
+    Retries on transient Discord 5xx errors and degrades to an empty pool."""
     for attempt in range(_HISTORY_RETRIES):
         try:
-            window: list[discord.Message] = []
-            async for msg in message.channel.history(limit=max_history * 3, before=message):
-                if not _is_eligible(msg, bot_user_id):
-                    continue
-                window.append(msg)
-                if len(window) >= max_history:
-                    break
-            window.reverse()
-            return window
+            pool: list[discord.Message] = [
+                msg async for msg in message.channel.history(limit=CONVERSATION_MAX_WINDOW, before=message)
+            ]
+            pool.reverse()
+            return pool
         except discord.DiscordServerError as e:
             if attempt < _HISTORY_RETRIES - 1:
                 delay = _RETRY_DELAY_SECONDS * (attempt + 1)
@@ -155,17 +122,55 @@ async def _fetch_history_window(message: discord.Message, bot_user_id: int,
     return []
 
 
-async def get_conversation_context(message: discord.Message, bot_user_id: int, bot_display_name: str,
-                                   max_history: int = 15) -> list[str]:
-    window: list[discord.Message] = []
-    if max_history > 0:
-        window = await _fetch_history_window(message, bot_user_id, max_history)
-    known: dict[int, discord.Message] = {m.id: m for m in window}
+async def _message_turn(msg: discord.Message, bot_user_id: int, include_images: bool) -> tuple[str, str | list]:
+    role = "assistant" if msg.author.id == bot_user_id else "user"
+    line = format_turn_line(msg, bot_user_id)
+    if role == "assistant" or not include_images:
+        return role, line
+    blocks, _ = await collect_image_attachments(msg)
+    if not blocks:
+        return role, line
+    return role, [line, *[ImageUrl(url=b["image_url"]["url"]) for b in blocks]]
 
-    extras = await _trace_outside_reply_chain(message, bot_user_id, known, CONVERSATION_MAX_CHAIN_EXTRA)
-    if extras:
-        for m in extras:
-            known[m.id] = m
-        window = extras + window
 
-    return [_format_line(m, bot_user_id, known) for m in window]
+async def build_conversation_turns(message: discord.Message, bot_user_id: int) -> list[tuple[str, str | list]]:
+    """Stepping-window conversation history as (role, content) turns.
+
+    The window grows append-only from CONVERSATION_BASE_WINDOW up to
+    CONVERSATION_MAX_WINDOW messages. Only when the persisted watermark
+    falls outside the freshly fetched pool is the window reset to the
+    newest CONVERSATION_BASE_WINDOW messages (one deliberate cache
+    invalidation), and the watermark advanced to the new window start.
+    """
+    pool = await _fetch_recent_pool(message)
+    if not pool:
+        return []
+    channel_id = message.channel.id
+    watermark = await get_talk_window_start(channel_id)
+    if watermark and any(msg.id == watermark for msg in pool):
+        window = [msg for msg in pool if msg.id >= watermark]
+    else:
+        window = pool[-CONVERSATION_BASE_WINDOW:]
+        channel_name = getattr(message.channel, "name", "") or "Direct Message"
+        await set_talk_window_start(channel_id, window[0].id, channel_name)
+        log.info("Talk window reset for channel %s: watermark moved to message %s (%d message window).",
+                 channel_id, window[0].id, len(window))
+    window = [msg for msg in window if _is_eligible(msg, bot_user_id)]
+    if not window:
+        return []
+    image_budget = CONVERSATION_MAX_HISTORY_IMAGES
+    include_images: dict[int, bool] = {}
+    for msg in reversed(window):
+        if image_budget <= 0:
+            break
+        if any(_is_image_attachment(att) for att in msg.attachments):
+            include_images[msg.id] = True
+            image_budget -= 1
+    turns: list[tuple[str, str | list]] = []
+    for msg in window:
+        role, content = await _message_turn(msg, bot_user_id, include_images.get(msg.id, False))
+        if role == "assistant" and turns and turns[-1][0] == "assistant":
+            turns[-1] = ("assistant", f"{turns[-1][1]}\n\n{content}")
+        else:
+            turns.append((role, content))
+    return turns

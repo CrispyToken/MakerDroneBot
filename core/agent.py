@@ -176,12 +176,19 @@ async def get_agent() -> Agent[BotDependencies, str]:
         Parameters:
         - channel: Channel name, mention (e.g., <#123456>), or ID. Provide this when the user
           asks to read a channel.
-        - message_link: Full Discord message URL. Provide this when the user shares a link to a
-          specific message. The tool will automatically fetch context around that message.
+        - message_link: Full Discord message URL, or a bare message ID. The `id:` values shown
+          in conversation context and channel transcripts are message IDs and can be passed here
+          as-is; a bare ID is resolved as a message in the channel this conversation is taking
+          place in. The tool will automatically fetch context around that message.
         Provide either channel or message_link. If message_link is provided, it takes precedence.
         """
         if not ctx.deps.is_staff:
             return "Access denied: This tool can only be used by confirmed staff members."
+        message_link = message_link.strip()
+        if message_link.startswith("id:"):
+            message_link = message_link[3:].strip()
+        if message_link.isdigit():
+            message_link = f"https://discord.com/channels/{ctx.deps.guild_id}/{ctx.deps.channel_id}/{message_link}"
         from services.channel_reader import read_channel_content
         parts = await read_channel_content(ctx.deps.bot, ctx.deps.guild_id, channel, message_link)
         content: list[str | ImageUrl] = []

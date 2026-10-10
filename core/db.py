@@ -25,7 +25,8 @@ _SCHEMA_STATEMENTS = (
     """,
     """
     CREATE TABLE IF NOT EXISTS permitted_channels (
-        channel_id INTEGER PRIMARY KEY, channel_name TEXT, added_at TEXT
+        channel_id INTEGER PRIMARY KEY, channel_name TEXT, added_at TEXT,
+        window_start_message_id INTEGER DEFAULT 0
     )
     """,
     """
@@ -34,6 +35,7 @@ _SCHEMA_STATEMENTS = (
 )
 
 _MIGRATION_ADD_ACTIVE_COLUMN = "ALTER TABLE monitored_channels ADD COLUMN active INTEGER DEFAULT 1"
+_MIGRATION_ADD_WINDOW_START_COLUMN = "ALTER TABLE permitted_channels ADD COLUMN window_start_message_id INTEGER DEFAULT 0"
 
 _SQL_TRACK_USER = """
     INSERT INTO user_profiles (user_id, username, display_name, roles, join_date, last_seen, message_count)
@@ -65,6 +67,12 @@ _SQL_ADD_PERMITTED_CHANNEL = """
     ON CONFLICT(channel_id) DO UPDATE SET channel_name = excluded.channel_name
 """
 _SQL_REMOVE_PERMITTED_CHANNEL = "DELETE FROM permitted_channels WHERE channel_id = ?"
+_SQL_GET_TALK_WINDOW_START = "SELECT window_start_message_id FROM permitted_channels WHERE channel_id = ?"
+_SQL_SET_TALK_WINDOW_START = """
+INSERT INTO permitted_channels (channel_id, channel_name, added_at, window_start_message_id)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(channel_id) DO UPDATE SET window_start_message_id = excluded.window_start_message_id
+"""
 _SQL_GET_STAFF_ROLE_IDS = "SELECT role_id FROM staff_roles"
 _SQL_GET_MONITORED_LAST_MESSAGE_ID = "SELECT last_message_id FROM monitored_channels WHERE channel_id = ?"
 _SQL_UPSERT_MONITORED_CHANNEL = """
@@ -83,11 +91,12 @@ _SQL_CLEAR_STAFF_NOTES = "UPDATE user_profiles SET staff_notes = '' WHERE user_i
 
 
 async def _apply_migrations(db: aiosqlite.Connection) -> None:
-    try:
-        await db.execute(_MIGRATION_ADD_ACTIVE_COLUMN)
-    except sqlite3.OperationalError as error:
-        if "duplicate column" not in str(error).lower():
-            raise
+    for statement in (_MIGRATION_ADD_ACTIVE_COLUMN, _MIGRATION_ADD_WINDOW_START_COLUMN):
+        try:
+            await db.execute(statement)
+        except sqlite3.OperationalError as error:
+            if "duplicate column" not in str(error).lower():
+                raise
 
 
 async def init_db() -> None:
@@ -184,6 +193,18 @@ async def remove_permitted_channel(channel_id: int) -> bool:
         cursor = await db.execute(_SQL_REMOVE_PERMITTED_CHANNEL, (channel_id,))
         await db.commit()
         return cursor.rowcount > 0
+
+async def get_talk_window_start(channel_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(_SQL_GET_TALK_WINDOW_START, (channel_id,)) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row and row[0] else 0
+
+async def set_talk_window_start(channel_id: int, message_id: int, channel_name: str = "") -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(_SQL_SET_TALK_WINDOW_START, (channel_id, channel_name, now, message_id))
+        await db.commit()
 
 
 async def get_staff_role_ids() -> set[int]:

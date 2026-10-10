@@ -59,9 +59,8 @@ async def send_final_answer(message: discord.Message, answer: str):
         await message.reply(answer)
         return
     if length <= DISCORD_MAX_SPLIT_CHARS:
-        parts = split_for_discord(answer, limit=DISCORD_CHAR_LIMIT)
-        for i, part in enumerate(parts, 1):
-            await message.reply(f"Part {i}/{len(parts)}\n{part}")
+        for part in split_for_discord(answer, limit=DISCORD_CHAR_LIMIT):
+            await message.reply(part)
         return
     file = discord.File(BytesIO(answer.encode("utf-8")), filename="response.md")
     try:

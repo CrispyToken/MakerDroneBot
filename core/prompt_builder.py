@@ -9,6 +9,7 @@ log = logging.getLogger("rag-bot")
 class BotDependencies:
     bot: discord.Client
     guild_id: int
+    channel_id: int
     user_profile: dict | None
     current_time_str: str
     channel_name: str

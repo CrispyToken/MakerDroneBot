@@ -4,14 +4,14 @@ import discord
 from datetime import datetime
 from core.agent import get_agent, BotDependencies
 from core.db import get_user_profile, get_staff_role_ids
-from utils.context import build_server_channel_list, get_conversation_context, resolve_replied_message
+from utils.context import build_server_channel_list, build_conversation_turns, format_turn_line, resolve_replied_message
 from utils.attachments import collect_image_attachments, collect_text_attachments
 from utils.formatting import send_final_answer, sanitize_bot_style
 from core.llm_reasoning import chat_reasoning
 from core.console import print_user_line
 from core.locks import llm_lock, track_llm_task, active_llm_task_label
-from config import CONVERSATION_MAX_HISTORY
-from pydantic_ai import ModelResponse, TextPart, ToolCallPart
+from pydantic_ai import ImageUrl, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 log = logging.getLogger("rag-bot")
@@ -61,6 +61,7 @@ async def _gather_dependencies(bot: discord.Client, message: discord.Message) ->
     return BotDependencies(
         bot=bot,
         guild_id=guild_id,
+        channel_id=message.channel.id,
         user_profile=profile,
         current_time_str=_format_current_time(),
         channel_name=channel_name,
@@ -70,52 +71,38 @@ async def _gather_dependencies(bot: discord.Client, message: discord.Message) ->
         is_staff=is_staff,
     )
 
-async def _build_prompt_text(message: discord.Message, bot_user_id: int, question: str, text_blocks: list[str]) -> str:
-    prompt_text = question
-    if text_blocks:
-        prompt_text += "\n\n" + "\n\n".join(text_blocks)
-    if message.author.id != bot_user_id:
-        prompt_text = f"{message.author.display_name}: " + prompt_text
-    return prompt_text
-
-async def _assemble_user_content(message: discord.Message, bot_user_id: int, bot_display_name: str,
-                                 question: str, text_blocks: list[str], images: list[dict],
+async def _assemble_user_content(message: discord.Message, bot_user_id: int,
+                                 text_blocks: list[str], images: list[dict],
                                  replied_to: discord.Message | None = None,
                                  replied_text_blocks: list[str] | None = None,
                                  replied_images: list[dict] | None = None) -> str | list:
-    conversation_history = await get_conversation_context(
-        message, bot_user_id, bot_display_name, max_history=CONVERSATION_MAX_HISTORY
-    )
-    history_text = ""
-    if conversation_history:
-        history_text = (
-            "[Recent Conversation History — chronological, oldest to newest, timestamps UTC]\n"
-            + "\n".join(conversation_history)
-            + "\n[End of History]\n\n"
-        )
-    if replied_text_blocks and replied_to is not None:
+    parts: list[str | ImageUrl] = [format_turn_line(message, bot_user_id)]
+    parts.extend(ImageUrl(url=img["image_url"]["url"]) for img in images)
+    parts.extend(text_blocks)
+    if replied_to is not None:
         author = replied_to.author.display_name
-        text_blocks = text_blocks + [f"[From the replied-to message by {author}]\n{block}"
-                                     for block in replied_text_blocks]
-    prompt_text = await _build_prompt_text(message, bot_user_id, question, text_blocks)
-    replied_images = replied_images or []
-    if images or replied_images:
-        from pydantic_ai import ImageUrl
-        content: list[str | ImageUrl] = [history_text + prompt_text]
-        if images:
-            content.append(
-                f"[{len(images)} image(s) attached by {message.author.display_name} in the current message:]")
-            content.extend(ImageUrl(url=img["image_url"]["url"]) for img in images)
+        parts.extend(f"[From the replied-to message by {author}]\n{block}"
+                     for block in (replied_text_blocks or []))
         if replied_images:
-            author = replied_to.author.display_name
-            content.append(
-                f"[{len(replied_images)} image(s) attached by {author} in the replied-to message:]")
-            content.extend(ImageUrl(url=img["image_url"]["url"]) for img in replied_images)
-        return content
-    else:
-        return history_text + prompt_text
+            parts.append(f"[{len(replied_images)} image(s) attached by {author} in the replied-to message:]")
+            parts.extend(ImageUrl(url=img["image_url"]["url"]) for img in replied_images)
+    if len(parts) == 1:
+        return parts[0]
+    return parts
 
-async def _execute_agent(message: discord.Message, user_content: str | list, deps: BotDependencies) -> str | None:
+def _to_model_messages(turns: list[tuple[str, str | list]]) -> list[ModelRequest | ModelResponse] | None:
+    if not turns:
+        return None
+    messages: list[ModelRequest | ModelResponse] = []
+    for role, content in turns:
+        if role == "assistant":
+            messages.append(ModelResponse(parts=[TextPart(content=content)]))
+        else:
+            messages.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+    return messages
+
+async def _execute_agent(message: discord.Message, user_content: str | list, deps: BotDependencies,
+                         history_turns: list[tuple[str, str | list]]) -> str | None:
     agent = await get_agent()
     if isinstance(user_content, str):
         print_user_line(user_content)
@@ -131,7 +118,7 @@ async def _execute_agent(message: discord.Message, user_content: str | list, dep
     try:
         async with track_llm_task("chat"):
             async with chat_reasoning():
-                async with agent.iter(user_content, deps=deps) as agent_run:
+                async with agent.iter(user_content, message_history=_to_model_messages(history_turns), deps=deps) as agent_run:
                     async for node in agent_run:
                         model_response = getattr(node, 'model_response', None)
                         if isinstance(model_response, ModelResponse):
@@ -180,24 +167,18 @@ async def answer_question(bot: discord.Client, message: discord.Message, questio
         for warning in image_warnings + text_warnings:
             log.info("Attachment warning: %s", warning)
 
-        user_question = question.strip()
-        question_for_model = user_question
-        if not question_for_model:
-            if images or replied_images:
-                question_for_model = "Describe the attached image(s) in detail."
-            elif text_blocks or replied_text_blocks:
-                question_for_model = "Review the attached text and answer any relevant request."
-        if not question_for_model and not images and not text_blocks and not replied_images and not replied_text_blocks:
+        if not question.strip() and not images and not text_blocks and not replied_images and not replied_text_blocks:
             await message.reply("Provide a question or attach an image/text file.")
             return
 
         deps = await _gather_dependencies(bot, message)
+        history_turns = await build_conversation_turns(message, bot.user.id)
         user_content = await _assemble_user_content(
-            message, bot.user.id, bot.user.display_name, question_for_model, text_blocks, images,
+            message, bot.user.id, text_blocks, images,
             replied_to, replied_text_blocks, replied_images
         )
+        output = await _execute_agent(message, user_content, deps, history_turns)
 
-        output = await _execute_agent(message, user_content, deps)
         if output is not None:
             await send_final_answer(message, output)
 
