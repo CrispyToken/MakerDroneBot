@@ -58,7 +58,7 @@ _capabilities = [
 ]
 _registries = [
     # Dynamically pull Anthropic's official skills at runtime
-    GitSkillsRegistry('https://github.com/anthropics/skills', path='skills')
+    # GitSkillsRegistry('https://github.com/anthropics/skills', path='skills')
 ]
 
 if _existing_skills_dirs:
