@@ -40,14 +40,16 @@ def _author_label(msg: discord.Message) -> str:
     return f"{display_name} (@{author.name})"
 
 
-def _message_body(msg: discord.Message, bot_user_id: int) -> str:
-    text = msg.clean_content
-    if msg.author.id == bot_user_id:
+def _message_body(msg: discord.Message, bot_user_id: int, text_override: str | None = None,
+                  ignore_attachment_ids: set[int] | None = None) -> str:
+    ignore = ignore_attachment_ids or set()
+    text = text_override if text_override is not None else msg.clean_content
+    if msg.author.id == bot_user_id and text_override is None:
         text = _PART_PREFIX_RE.sub("", clean_answer_text(text))
     parts = [text] if text else []
-    has_image = any(_is_image_attachment(att) for att in msg.attachments)
-    has_file = any(not _is_image_attachment(att) for att in msg.attachments)
-
+    attachments = [att for att in msg.attachments if att.id not in ignore]
+    has_image = any(_is_image_attachment(att) for att in attachments)
+    has_file = any(not _is_image_attachment(att) for att in attachments)
     if has_image:
         parts.append("[image attached]")
     if has_file:
@@ -57,7 +59,8 @@ def _message_body(msg: discord.Message, bot_user_id: int) -> str:
     return "\n".join(parts)
 
 
-def format_turn_line(msg: discord.Message, bot_user_id: int) -> str:
+def format_turn_line(msg: discord.Message, bot_user_id: int, text_override: str | None = None,
+                     ignore_attachment_ids: set[int] | None = None) -> str:
     """Unified metadata line, used for BOTH historical messages and the current
     trigger message so the next turn's prompt prefix matches byte-for-byte."""
     ts = msg.created_at.strftime("%Y-%m-%d %H:%M UTC")
@@ -65,7 +68,7 @@ def format_turn_line(msg: discord.Message, bot_user_id: int) -> str:
     ref = msg.reference
     if ref and ref.message_id:
         header += f" (in response to id:{ref.message_id})"
-    return f"{header}: {_message_body(msg, bot_user_id)}"
+    return f"{header}: {_message_body(msg, bot_user_id, text_override, ignore_attachment_ids)}"
 
 
 def _is_eligible(msg: discord.Message, bot_user_id: int) -> bool:
@@ -122,9 +125,29 @@ async def _fetch_recent_pool(message: discord.Message) -> list[discord.Message]:
     return []
 
 
+async def _bot_md_substitute(msg: discord.Message) -> tuple[str | None, set[int]]:
+    """When one of our own replies was too long for Discord and went out as an
+    .md attachment, recover the full answer text so history stays complete."""
+    for att in msg.attachments:
+        if not (att.filename or "").lower().endswith(".md"):
+            continue
+        try:
+            raw = await att.read()
+        except Exception as e:
+            log.warning("Could not download bot md attachment %s: %s", att.filename, e)
+            continue
+        text = raw.decode("utf-8", errors="ignore").strip()
+        if text:
+            return text, {att.id}
+    return None, set()
+
 async def _message_turn(msg: discord.Message, bot_user_id: int, include_images: bool) -> tuple[str, str | list]:
     role = "assistant" if msg.author.id == bot_user_id else "user"
-    line = format_turn_line(msg, bot_user_id)
+    if role == "assistant":
+        override, ignore_ids = await _bot_md_substitute(msg)
+    else:
+        override, ignore_ids = None, set()
+    line = format_turn_line(msg, bot_user_id, override, ignore_ids)
     if role == "assistant" or not include_images:
         return role, line
     blocks, _ = await collect_image_attachments(msg)
@@ -169,8 +192,5 @@ async def build_conversation_turns(message: discord.Message, bot_user_id: int) -
     turns: list[tuple[str, str | list]] = []
     for msg in window:
         role, content = await _message_turn(msg, bot_user_id, include_images.get(msg.id, False))
-        if role == "assistant" and turns and turns[-1][0] == "assistant":
-            turns[-1] = ("assistant", f"{turns[-1][1]}\n\n{content}")
-        else:
-            turns.append((role, content))
+        turns.append((role, content))
     return turns

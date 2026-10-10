@@ -9,12 +9,11 @@ from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.capabilities import WebFetch
 from pydantic_ai_harness import (
-    SystemReminders, OutputGuardrail, GuardrailResult,
+    OutputGuardrail, GuardrailResult,
     PromptInjectionDefender, CodeMode
 )
 from pydantic_ai_skills import SkillsCapability, GitSkillsRegistry
 from pydantic_monty import MountDir
-from pydantic_ai_harness.system_reminders import GoalReanchor
 from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
 
 from openai import AsyncOpenAI
@@ -48,7 +47,6 @@ _SANDBOX_SCRATCHPAD.mkdir(parents=True, exist_ok=True)
 
 _existing_skills_dirs = [str(d) for d in SKILLS_DIRS if d.is_dir()]
 _capabilities = [
-    SystemReminders(dynamic_reminders=[GoalReanchor()]),
     OutputGuardrail(guard=enforce_bot_style),
     WebFetch(local=True),
     PromptInjectionDefender(),
