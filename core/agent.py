@@ -110,7 +110,7 @@ async def get_agent() -> Agent[BotDependencies, str]:
         retries=3
     )
 
-    @agent.system_prompt
+    @agent.instructions
     def dynamic_system_prompt(ctx: RunContext[BotDependencies]) -> str:
         return build_system_prompt(ctx.deps)
 
