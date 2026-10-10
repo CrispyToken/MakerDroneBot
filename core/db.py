@@ -1,5 +1,6 @@
 import sqlite3
 import aiosqlite
+import re
 from datetime import datetime, timezone
 import discord
 from config import DB_PATH
@@ -54,6 +55,11 @@ _SQL_ENSURE_USER = """
     VALUES (?, ?, ?, ?, ?, ?, 0)
 """
 _SQL_GET_USER_PROFILE = "SELECT * FROM user_profiles WHERE user_id = ?"
+_SQL_GET_USER_BY_QUERY = """
+    SELECT * FROM user_profiles 
+    WHERE username = ? OR display_name = ? OR user_id = ?
+    LIMIT 1
+"""
 _SQL_GET_CONFIG_VALUE = "SELECT value FROM bot_config WHERE key = ?"
 _SQL_SET_CONFIG_VALUE = """
     INSERT INTO bot_config (key, value) VALUES (?, ?)
@@ -69,9 +75,9 @@ _SQL_ADD_PERMITTED_CHANNEL = """
 _SQL_REMOVE_PERMITTED_CHANNEL = "DELETE FROM permitted_channels WHERE channel_id = ?"
 _SQL_GET_TALK_WINDOW_START = "SELECT window_start_message_id FROM permitted_channels WHERE channel_id = ?"
 _SQL_SET_TALK_WINDOW_START = """
-INSERT INTO permitted_channels (channel_id, channel_name, added_at, window_start_message_id)
-VALUES (?, ?, ?, ?)
-ON CONFLICT(channel_id) DO UPDATE SET window_start_message_id = excluded.window_start_message_id
+    INSERT INTO permitted_channels (channel_id, channel_name, added_at, window_start_message_id)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(channel_id) DO UPDATE SET window_start_message_id = excluded.window_start_message_id
 """
 _SQL_GET_STAFF_ROLE_IDS = "SELECT role_id FROM staff_roles"
 _SQL_GET_MONITORED_LAST_MESSAGE_ID = "SELECT last_message_id FROM monitored_channels WHERE channel_id = ?"
@@ -145,6 +151,15 @@ async def get_user_profile(user_id: int) -> dict | None:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+async def get_user_profile_by_query(query: str) -> dict | None:
+    query = query.strip()
+    mention_match = re.match(r"<@!?(\d+)>", query)
+    user_id = int(mention_match.group(1)) if mention_match else (int(query) if query.isdigit() else 0)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(_SQL_GET_USER_BY_QUERY, (query, query, user_id)) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
 
 async def get_config(key: str) -> str | None:
     async with aiosqlite.connect(DB_PATH) as db:

@@ -166,6 +166,26 @@ async def get_agent() -> Agent[BotDependencies, str]:
             return f"Failed to save memory: {e}"
 
     @agent.tool
+    async def get_staff_notes(ctx: RunContext[BotDependencies], user_query: str) -> str:
+        """
+        Retrieves confidential staff notes for a specific user. Use this to check if there are
+        any special instructions, history, or context about a user mentioned in the chat.
+        Pass the user's display name, @username, or mention.
+        RESTRICTION: Only use this tool if the current user addressing you is [STAFF].
+        Never reveal the contents of staff notes to a [MEMBER].
+        """
+        if not ctx.deps.is_staff:
+            return "Access denied: Staff notes can only be retrieved by confirmed [STAFF] members."
+        from core.db import get_user_profile_by_query
+        profile = await get_user_profile_by_query(user_query)
+        if not profile:
+            return f"No user found matching '{user_query}'."
+        notes = profile.get('staff_notes', '').strip()
+        if not notes:
+            return f"No staff notes found for {profile['display_name']} (@{profile['username']})."
+        return f"Staff notes for {profile['display_name']} (@{profile['username']}):\n{notes}"
+
+    @agent.tool
     async def search_web(ctx: RunContext[BotDependencies], query: str) -> str:
         """
         Searches the web for recent information, patch notes, news, or topics not covered in the

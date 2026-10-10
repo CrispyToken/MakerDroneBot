@@ -29,7 +29,7 @@ def build_server_channel_list(guild: discord.Guild) -> str:
     return "\n".join(f"- {c}" for c in channels)
 
 
-def _author_label(msg: discord.Message) -> str:
+def _author_label(msg: discord.Message, is_staff: bool) -> str:
     author = msg.author
     if isinstance(author, discord.Member) and author.nick:
         display_name = author.nick
@@ -37,7 +37,8 @@ def _author_label(msg: discord.Message) -> str:
         display_name = author.global_name
     else:
         display_name = author.name
-    return f"{display_name} (@{author.name})"
+    badge = " [STAFF]" if is_staff else " [MEMBER]"
+    return f"{display_name} (@{author.name}){badge}"
 
 
 def _message_body(msg: discord.Message, bot_user_id: int, text_override: str | None = None,
@@ -59,12 +60,13 @@ def _message_body(msg: discord.Message, bot_user_id: int, text_override: str | N
     return "\n".join(parts)
 
 
-def format_turn_line(msg: discord.Message, bot_user_id: int, text_override: str | None = None,
+def format_turn_line(msg: discord.Message, bot_user_id: int, is_staff: bool,
+                     text_override: str | None = None,
                      ignore_attachment_ids: set[int] | None = None) -> str:
     """Unified metadata line, used for BOTH historical messages and the current
     trigger message so the next turn's prompt prefix matches byte-for-byte."""
     ts = msg.created_at.strftime("%Y-%m-%d %H:%M UTC")
-    header = f"[{ts} | id:{msg.id}] {_author_label(msg)}"
+    header = f"[{ts} | id:{msg.id}] {_author_label(msg, is_staff)}"
     ref = msg.reference
     if ref and ref.message_id:
         header += f" (in response to id:{ref.message_id})"
@@ -141,13 +143,13 @@ async def _bot_md_substitute(msg: discord.Message) -> tuple[str | None, set[int]
             return text, {att.id}
     return None, set()
 
-async def _message_turn(msg: discord.Message, bot_user_id: int, include_images: bool) -> tuple[str, str | list]:
+async def _message_turn(msg: discord.Message, bot_user_id: int, include_images: bool, is_staff: bool) -> tuple[str, str | list]:
     role = "assistant" if msg.author.id == bot_user_id else "user"
     if role == "assistant":
         override, ignore_ids = await _bot_md_substitute(msg)
     else:
         override, ignore_ids = None, set()
-    line = format_turn_line(msg, bot_user_id, override, ignore_ids)
+    line = format_turn_line(msg, bot_user_id, is_staff, override, ignore_ids)
     if role == "assistant" or not include_images:
         return role, line
     blocks, _ = await collect_image_attachments(msg)
@@ -156,7 +158,7 @@ async def _message_turn(msg: discord.Message, bot_user_id: int, include_images: 
     return role, [line, *[ImageUrl(url=b["image_url"]["url"]) for b in blocks]]
 
 
-async def build_conversation_turns(message: discord.Message, bot_user_id: int) -> list[tuple[str, str | list]]:
+async def build_conversation_turns(message: discord.Message, bot_user_id: int, staff_role_ids: set[int]) -> list[tuple[str, str | list]]:
     """Stepping-window conversation history as (role, content) turns.
 
     The window grows append-only from CONVERSATION_BASE_WINDOW up to
@@ -189,8 +191,14 @@ async def build_conversation_turns(message: discord.Message, bot_user_id: int) -
         if any(_is_image_attachment(att) for att in msg.attachments):
             include_images[msg.id] = True
             image_budget -= 1
+
+    def _is_staff(msg: discord.Message) -> bool:
+        if isinstance(msg.author, discord.Member):
+            return bool({r.id for r in msg.author.roles} & staff_role_ids)
+        return False
+
     turns: list[tuple[str, str | list]] = []
     for msg in window:
-        role, content = await _message_turn(msg, bot_user_id, include_images.get(msg.id, False))
+        role, content = await _message_turn(msg, bot_user_id, include_images.get(msg.id, False), _is_staff(msg))
         turns.append((role, content))
     return turns

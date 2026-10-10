@@ -35,13 +35,7 @@ async def _keep_typing(channel: discord.abc.Messageable, stop_event: asyncio.Eve
 
 def _format_current_time() -> str:
     now = datetime.now().astimezone()
-    tz_name = now.tzname() or "Local Time"
-    tz_offset = now.strftime("%z")
-    formatted_offset = f"{tz_offset[:3]}:{tz_offset[3:]}" if len(tz_offset) == 5 else tz_offset
-    return (
-        f"Current Date and Time: {now.strftime('%A, %B %d, %Y at %H:%M:%S')} "
-        f"{tz_name} (UTC{formatted_offset})"
-    )
+    return f"Current Date: {now.strftime('%A, %B %d, %Y')}"
 
 
 async def _gather_dependencies(bot: discord.Client, message: discord.Message) -> BotDependencies:
@@ -49,12 +43,10 @@ async def _gather_dependencies(bot: discord.Client, message: discord.Message) ->
     channel_name = message.channel.name if message.guild else "Direct Message"
     channel_topic = getattr(message.channel, 'topic', None) or ""
     server_channels = build_server_channel_list(message.guild)
-    user_roles: list[str] | None = None
     is_staff = False
     guild_id = message.guild.id if message.guild else 0
 
     if isinstance(message.author, discord.Member):
-        user_roles = [role.name for role in message.author.roles if role.name != "@everyone"]
         staff_role_ids = await get_staff_role_ids()
         is_staff = bool({role.id for role in message.author.roles} & staff_role_ids)
 
@@ -62,21 +54,26 @@ async def _gather_dependencies(bot: discord.Client, message: discord.Message) ->
         bot=bot,
         guild_id=guild_id,
         channel_id=message.channel.id,
-        user_profile=profile,
         current_time_str=_format_current_time(),
         channel_name=channel_name,
         channel_topic=channel_topic,
         server_channels=server_channels,
-        user_roles=user_roles,
         is_staff=is_staff,
+        staff_role_ids=staff_role_ids,
+        user_profile=profile,
     )
 
 async def _assemble_user_content(message: discord.Message, bot_user_id: int,
                                  text_blocks: list[str], images: list[dict],
+                                 deps: BotDependencies,
                                  replied_to: discord.Message | None = None,
                                  replied_text_blocks: list[str] | None = None,
                                  replied_images: list[dict] | None = None) -> str | list:
-    parts: list[str | ImageUrl] = [format_turn_line(message, bot_user_id)]
+    parts: list[str | ImageUrl] = [format_turn_line(message, bot_user_id, is_staff=deps.is_staff)]
+    if deps.user_profile and deps.user_profile.get('staff_notes'):
+        notes = deps.user_profile['staff_notes'].strip()
+        if notes:
+            parts.append(f"[System: Confidential staff notes about the author of this message:\n{notes}]")
     parts.extend(ImageUrl(url=img["image_url"]["url"]) for img in images)
     parts.extend(text_blocks)
     if replied_to is not None:
@@ -172,9 +169,9 @@ async def answer_question(bot: discord.Client, message: discord.Message, questio
             return
 
         deps = await _gather_dependencies(bot, message)
-        history_turns = await build_conversation_turns(message, bot.user.id)
+        history_turns = await build_conversation_turns(message, bot.user.id, deps.staff_role_ids)
         user_content = await _assemble_user_content(
-            message, bot.user.id, text_blocks, images,
+            message, bot.user.id, text_blocks, images, deps,
             replied_to, replied_text_blocks, replied_images
         )
         output = await _execute_agent(message, user_content, deps, history_turns)
