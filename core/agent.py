@@ -116,6 +116,12 @@ async def get_agent() -> Agent[BotDependencies, str]:
 
     @agent.tool
     async def search_game_knowledge(ctx: RunContext[BotDependencies], query: str) -> str:
+        """
+        Searches the static knowledge base for game lore, rules, mechanics, ship modules, and
+        server-specific information about Event Horizon. Use when the user asks about the game,
+        its mechanics, ships, modules, or server rules. Do NOT use for general knowledge, recent
+        events, or things that happened in chat.
+        """
         try:
             context = await memory_recall_knowledge(query)
             if not context or not context.strip():
@@ -127,6 +133,12 @@ async def get_agent() -> Agent[BotDependencies, str]:
 
     @agent.tool
     async def search_memory(ctx: RunContext[BotDependencies], query: str) -> str:
+        """
+        Searches your dynamic memory for facts, decisions, and events learned from past
+        conversations. Use when the user asks about something that was discussed previously, a
+        decision that was made, or context from earlier interactions. Do NOT use for game lore
+        or static knowledge.
+        """
         try:
             context = await memory_recall_dynamic(query)
             if not context or not context.strip():
@@ -138,6 +150,14 @@ async def get_agent() -> Agent[BotDependencies, str]:
 
     @agent.tool
     async def save_memory(ctx: RunContext[BotDependencies], fact: str) -> str:
+        """
+        Saves a new, important fact to your long-term dynamic memory. Use when a user tells you
+        something new about the game, server rules, or community that you didn't already know,
+        when a staff member gives you a new instruction or rule to remember, or when you observe
+        a decision being made that should be recorded. Do NOT use for trivial conversation,
+        greetings, or things you already know. Only save facts that would be useful to remember
+        in future conversations.
+        """
         try:
             await memory_remember(fact)
             return f"Successfully saved dynamic memory: {fact}"
@@ -147,6 +167,13 @@ async def get_agent() -> Agent[BotDependencies, str]:
 
     @agent.tool
     async def search_web(ctx: RunContext[BotDependencies], query: str) -> str:
+        """
+        Searches the web for recent information, patch notes, news, or topics not covered in the
+        local knowledge base. Use when the user asks about recent events, recent patch notes, or
+        things outside your static knowledge. When in doubt about whether you have current or
+        complete information, search the web rather than guessing or declining to answer. Prefer
+        web search over saying "I don't know" when the information could plausibly be found online.
+        """
         return await execute_web_search(query)
 
     @agent.tool
