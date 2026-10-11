@@ -170,12 +170,23 @@ async def build_conversation_turns(message: discord.Message, bot_user_id: int, s
     watermark = await get_talk_window_start(channel_id)
     if watermark and any(msg.id == watermark for msg in pool):
         window = [msg for msg in pool if msg.id >= watermark]
+        if len(window) < CONVERSATION_BASE_WINDOW and len(pool) > len(window):
+            window = pool[-CONVERSATION_BASE_WINDOW:]
+            channel_name = getattr(message.channel, "name", "") or "Direct Message"
+            await set_talk_window_start(channel_id, window[0].id, channel_name)
+            log.info("Talk window expanded for channel %s: base size grew since "
+                     "the watermark was set; moved to message %s (%d message window).",
+                     channel_id, window[0].id, len(window))
     else:
+        if watermark:
+            reason = "watermark out of range (MAX shrank or message deleted)"
+        else:
+            reason = "no watermark set (first conversation in this channel)"
         window = pool[-CONVERSATION_BASE_WINDOW:]
         channel_name = getattr(message.channel, "name", "") or "Direct Message"
         await set_talk_window_start(channel_id, window[0].id, channel_name)
-        log.info("Talk window reset for channel %s: watermark moved to message %s (%d message window).",
-                 channel_id, window[0].id, len(window))
+        log.info("Talk window reset for channel %s: %s; moved to message %s (%d message window).",
+                 channel_id, reason, window[0].id, len(window))
     window = [msg for msg in window if _is_eligible(msg, bot_user_id)]
     if not window:
         return []
