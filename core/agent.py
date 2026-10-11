@@ -9,7 +9,6 @@ from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.capabilities import WebFetch
 from pydantic_ai_harness import (
-    OutputGuardrail, GuardrailResult,
     PromptInjectionDefender, CodeMode
 )
 from pydantic_ai_skills import SkillsCapability, GitSkillsRegistry
@@ -22,7 +21,6 @@ from core.memory import memory_remember, memory_recall_dynamic, memory_recall_kn
 from core.prompt_builder import BotDependencies, build_system_prompt
 from services.web_search import execute_web_search
 from services.game_db import game_database
-from utils.formatting import sanitize_bot_style
 
 log = logging.getLogger("rag-bot")
 
@@ -34,20 +32,11 @@ llm_provider = OpenAIProvider(
     )
 )
 
-def enforce_bot_style(output: str) -> GuardrailResult:
-    if not isinstance(output, str):
-        return GuardrailResult.allow()
-    cleaned = sanitize_bot_style(output)
-    if cleaned != output:
-        return GuardrailResult.replace(cleaned)
-    return GuardrailResult.allow()
-
 _SANDBOX_SCRATCHPAD = Path("data/sandbox_scratchpad").resolve()
 _SANDBOX_SCRATCHPAD.mkdir(parents=True, exist_ok=True)
 
 _existing_skills_dirs = [str(d) for d in SKILLS_DIRS if d.is_dir()]
 _capabilities = [
-    OutputGuardrail(guard=enforce_bot_style),
     WebFetch(local=True),
     PromptInjectionDefender(),
     RepairToolArguments(),

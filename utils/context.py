@@ -8,13 +8,11 @@ from pydantic_ai import ImageUrl
 from config import CONVERSATION_BASE_WINDOW, CONVERSATION_MAX_WINDOW, CONVERSATION_MAX_HISTORY_IMAGES
 from core.db import get_talk_window_start, set_talk_window_start
 from utils.attachments import collect_image_attachments, _is_image_attachment
-from utils.formatting import clean_answer_text
 
 log = logging.getLogger("rag-bot")
 
 _HISTORY_RETRIES = 3
 _RETRY_DELAY_SECONDS = 1.5
-_PART_PREFIX_RE = re.compile(r"^Part \d+/\d+\s*\n?")
 
 
 def build_server_channel_list(guild: discord.Guild) -> str:
@@ -45,8 +43,6 @@ def _message_body(msg: discord.Message, bot_user_id: int, text_override: str | N
                   ignore_attachment_ids: set[int] | None = None) -> str:
     ignore = ignore_attachment_ids or set()
     text = text_override if text_override is not None else msg.clean_content
-    if msg.author.id == bot_user_id and text_override is None:
-        text = _PART_PREFIX_RE.sub("", clean_answer_text(text))
     parts = [text] if text else []
     attachments = [att for att in msg.attachments if att.id not in ignore]
     has_image = any(_is_image_attachment(att) for att in attachments)

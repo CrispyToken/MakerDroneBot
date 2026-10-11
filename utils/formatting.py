@@ -3,40 +3,6 @@ import discord
 from io import BytesIO
 from config import DISCORD_CHAR_LIMIT, DISCORD_MAX_SPLIT_CHARS
 
-_EMOJI_RE = re.compile(
-    "["
-    "\U0001F600-\U0001F64F"
-    "\U0001F300-\U0001F5FF"
-    "\U0001F680-\U0001F6FF"
-    "\U0001F1E0-\U0001F1FF"
-    "\U00002702-\U000027B0"
-    "\U000024C2-\U0001F251"
-    "\U0001F900-\U0001F9FF"
-    "\U0001FA70-\U0001FAFF"
-    "\U00002600-\U000026FF"
-    "]+", flags=re.UNICODE)
-
-def sanitize_bot_style(text: str) -> str:
-    if not text:
-        return text
-    text = text.replace('\u2014', '-')
-    text = _EMOJI_RE.sub('', text)
-    return text
-
-def strip_thinking_tokens(text: str) -> str:
-    text = text or ""
-    text = re.sub(r"(?is)<think>.*?</think>", "", text)
-    text = re.sub(r"(?im)^\s*<think>\s*$", "", text)
-    text = re.sub(r"(?im)^\s*</think>\s*$", "", text)
-    return text.strip()
-
-def clean_answer_text(text: str) -> str:
-    text = strip_thinking_tokens(text)
-    text = re.sub(r"(?im)^\s*(sources?|citations?|references?)\s*:.*$", "", text)
-    text = re.sub(r"(?is)\n+\*\*Sources:\*\*.*$", "", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
 def split_for_discord(text: str, limit: int = 2000) -> list[str]:
     text = (text or "").strip()
     if not text: return ["(empty response)"]
@@ -50,7 +16,7 @@ def split_for_discord(text: str, limit: int = 2000) -> list[str]:
     return parts
 
 async def send_final_answer(message: discord.Message, answer: str):
-    answer = clean_answer_text(answer)
+    answer = (answer or "").strip()
     if not answer:
         await message.reply("I could not generate a sendable response.")
         return
