@@ -1,17 +1,14 @@
 import re
 import logging
 import discord
-from config import CHANNEL_READ_WINDOW_SIZE, CHANNEL_READ_MAX_IMAGES
+from config import CHANNEL_READ_WINDOW_SIZE
 from utils.attachments import collect_image_attachments
+from utils.formatting import serialize_embed
 
 log = logging.getLogger("rag-bot")
 
 DISCORD_MSG_LINK_RE = re.compile(r"^https?://(?:discord.com|discordapp.com)/channels/(\d+|@me)/(\d+)/(\d+)$")
-_MAX_OUTPUT_CHARS = 10000
-_MAX_SINGLE_MSG_CHARS = 1000
-
-
-def _author_label(msg: discord.Message) -> str:
+def _author_label(msg: discord.Message, is_staff: bool) -> str:
     author = msg.author
     if isinstance(author, discord.Member) and author.nick:
         display_name = author.nick
@@ -19,117 +16,57 @@ def _author_label(msg: discord.Message) -> str:
         display_name = author.global_name
     else:
         display_name = author.name
-    return f"{display_name} (@{author.name})"
+    badge = " [STAFF]" if is_staff else " [MEMBER]"
+    return f"{display_name} (@{author.name}){badge}"
 
+def _is_staff(msg: discord.Message, staff_role_ids: set[int]) -> bool:
+    if isinstance(msg.author, discord.Member):
+        return bool({r.id for r in msg.author.roles} & staff_role_ids)
+    return False
 
-def _serialize_embed(embed: discord.Embed) -> str:
-    parts = []
-    if embed.title:
-        parts.append(f"[Embed Title] {embed.title}")
-    if embed.description:
-        parts.append(f"[Embed Description] {embed.description}")
-    if embed.fields:
-        for field in embed.fields:
-            parts.append(f"[Embed Field] {field.name}: {field.value}")
-    if embed.footer and embed.footer.text:
-        parts.append(f"[Embed Footer] {embed.footer.text}")
-    if embed.author and embed.author.name:
-        parts.append(f"[Embed Author] {embed.author.name}")
-    return "\n".join(parts)
-
-
-def _message_line(msg: discord.Message, target_id: int | None) -> str:
+def _message_line(msg: discord.Message, target_id: int | None, is_staff: bool) -> str:
     prefix = ">>> TARGET MESSAGE (linked by user) <<<\n" if (target_id is not None and msg.id == target_id) else ""
     ts = msg.created_at.strftime("%Y-%m-%d %H:%M UTC")
-
+    header = f"[{ts} | id:{msg.id}] {_author_label(msg, is_staff)}"
+    ref = msg.reference
+    if ref and ref.message_id:
+        header += f" (in response to id:{ref.message_id})"
     content_parts = []
     if msg.clean_content:
         content_parts.append(msg.clean_content)
     for embed in msg.embeds:
-        embed_text = _serialize_embed(embed)
+        embed_text = serialize_embed(embed)
         if embed_text:
             content_parts.append(embed_text)
-
     content = "\n".join(content_parts) if content_parts else "(no text content)"
-    if len(content) > _MAX_SINGLE_MSG_CHARS:
-        content = content[:_MAX_SINGLE_MSG_CHARS] + "... [truncated]"
-
-    return f"{prefix}[{ts}] {_author_label(msg)}: {content}"
-
+    return f"{prefix}{header}: {content}"
 
 async def _append_message_parts(parts: list, msg: discord.Message, target_id: int | None,
-                               include_images: bool, budget: list[int]) -> None:
-    parts.append(_message_line(msg, target_id))
+                                include_images: bool, is_staff: bool) -> None:
+    parts.append(_message_line(msg, target_id, is_staff))
     if not include_images or not msg.attachments:
         return
     blocks, warnings = await collect_image_attachments(msg)
     ts = msg.created_at.strftime("%Y-%m-%d %H:%M UTC")
     for warning in warnings:
         parts.append(f"[{ts}] {warning}")
-    if not blocks:
-        return
-    take = blocks[:budget[0]]
-    budget[0] -= len(take)
-    parts.extend(take)
-    dropped = len(blocks) - len(take)
-    if dropped:
-        parts.append(f"[{ts}] {dropped} image(s) from {_author_label(msg)} omitted (channel-read image cap reached).")
-
+    if blocks:
+        parts.extend(blocks)
 
 async def _build_window_parts(window: list[discord.Message], target_id: int | None,
-                              images_for: str) -> list:
-    """Assemble transcript parts oldest -> newest, then cap by total length.
-
-    Parts are grouped per message so a message's text and its images are kept
-    or dropped together. When the combined transcript exceeds the output
-    budget, the OLDEST messages are dropped first. This preserves the newest
-    content, which is what a channel read is asking about, and for a
-    message-link read it also keeps the linked (target) message, since only
-    the older context ahead of it is removed.
-    """
-    groups: list[list] = []
-    budget = [CHANNEL_READ_MAX_IMAGES]
-    target_group = -1
-    for index, msg in enumerate(window):
-        include = images_for == "window" or (images_for == "target" and msg.id == target_id)
-        msg_parts: list = []
-        await _append_message_parts(msg_parts, msg, target_id, include, budget)
-        if target_id is not None and msg.id == target_id:
-            target_group = index
-        groups.append(msg_parts)
-
-    def _text_len(parts: list) -> int:
-        return sum(len(p) for p in parts if isinstance(p, str))
-
-    total = sum(_text_len(g) for g in groups)
-    keep = [True] * len(groups)
-    index = 0
-    while total > _MAX_OUTPUT_CHARS and index < len(groups):
-        if index != target_group:
-            total -= _text_len(groups[index])
-            keep[index] = False
-        index += 1
-    index = len(groups) - 1
-    while total > _MAX_OUTPUT_CHARS and index >= 0:
-        if index != target_group:
-            total -= _text_len(groups[index])
-            keep[index] = False
-        index -= 1
-
+                              images_for: str, staff_role_ids: set[int]) -> list:
+    """Assemble transcript parts oldest -> newest. Every message is kept fully
+    intact; nothing is truncated or dropped, so the complete context reaches
+    the model."""
     parts: list = []
-    dropped = 0
-    for kept, msg_parts in zip(keep, groups):
-        if kept:
-            parts.extend(msg_parts)
-        else:
-            dropped += 1
-    if dropped:
-        parts.insert(0, f"[Transcript truncated: {dropped} older message(s) omitted due to length.]")
+    for msg in window:
+        include = images_for == "window" or (images_for == "target" and msg.id == target_id)
+        is_staff = _is_staff(msg, staff_role_ids)
+        await _append_message_parts(parts, msg, target_id, include, is_staff)
     return parts
 
-
 async def read_channel_content(bot: discord.Client, guild_id: int, channel_input: str,
-                               message_link: str) -> list:
+                               message_link: str, staff_role_ids: set[int]) -> list:
     """Returns an ordered list of str transcript lines and OpenAI-style image
     blocks ({"type": "image_url", ...}); the caller converts blocks for the model."""
     if message_link:
@@ -177,7 +114,7 @@ async def read_channel_content(bot: discord.Client, guild_id: int, channel_input
         except discord.HTTPException:
             return ["An error occurred while reading the channel history around the linked message. Do not retry."]
         window = before_msgs + [target_msg] + after_msgs
-        parts = await _build_window_parts(window, target_msg.id, "target")
+        parts = await _build_window_parts(window, target_msg.id, "target", staff_role_ids)
         header = (f"Transcript of #{channel.name} around the linked message "
                   f"({len(window)} messages, oldest first):")
         return [header] + parts
@@ -225,6 +162,6 @@ async def read_channel_content(bot: discord.Client, guild_id: int, channel_input
     window.reverse()
     if not window:
         return [f"The channel #{getattr(channel, 'name', 'unknown')} has no readable messages."]
-    parts = await _build_window_parts(window, None, "window")
+    parts = await _build_window_parts(window, None, "window", staff_role_ids)
     header = f"Transcript of #{channel.name} ({len(window)} messages, oldest first):"
     return [header] + parts

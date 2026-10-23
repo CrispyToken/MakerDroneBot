@@ -224,7 +224,7 @@ async def get_agent() -> Agent[BotDependencies, str]:
         if message_link.isdigit():
             message_link = f"https://discord.com/channels/{ctx.deps.guild_id}/{ctx.deps.channel_id}/{message_link}"
         from services.channel_reader import read_channel_content
-        parts = await read_channel_content(ctx.deps.bot, ctx.deps.guild_id, channel, message_link)
+        parts = await read_channel_content(ctx.deps.bot, ctx.deps.guild_id, channel, message_link, ctx.deps.staff_role_ids)
         content: list[str | ImageUrl] = []
         for part in parts:
             if isinstance(part, str):

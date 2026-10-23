@@ -8,6 +8,7 @@ from pydantic_ai import ImageUrl
 from config import CONVERSATION_BASE_WINDOW, CONVERSATION_MAX_WINDOW, CONVERSATION_MAX_HISTORY_IMAGES
 from core.db import get_talk_window_start, set_talk_window_start
 from utils.attachments import collect_image_attachments, _is_image_attachment
+from utils.formatting import serialize_embed
 
 log = logging.getLogger("rag-bot")
 
@@ -44,6 +45,10 @@ def _message_body(msg: discord.Message, bot_user_id: int, text_override: str | N
     ignore = ignore_attachment_ids or set()
     text = text_override if text_override is not None else msg.clean_content
     parts = [text] if text else []
+    for embed in msg.embeds:
+        embed_text = serialize_embed(embed)
+        if embed_text:
+            parts.append(embed_text)
     attachments = [att for att in msg.attachments if att.id not in ignore]
     has_image = any(_is_image_attachment(att) for att in attachments)
     has_file = any(not _is_image_attachment(att) for att in attachments)

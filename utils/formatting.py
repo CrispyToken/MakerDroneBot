@@ -3,6 +3,22 @@ import discord
 from io import BytesIO
 from config import DISCORD_CHAR_LIMIT, DISCORD_MAX_SPLIT_CHARS
 
+def serialize_embed(embed: discord.Embed) -> str:
+    """Render a Discord embed as plain text so the model can read it."""
+    parts = []
+    if embed.title:
+        parts.append(f"[Embed Title] {embed.title}")
+    if embed.description:
+        parts.append(f"[Embed Description] {embed.description}")
+    if embed.fields:
+        for field in embed.fields:
+            parts.append(f"[Embed Field] {field.name}: {field.value}")
+    if embed.footer and embed.footer.text:
+        parts.append(f"[Embed Footer] {embed.footer.text}")
+    if embed.author and embed.author.name:
+        parts.append(f"[Embed Author] {embed.author.name}")
+    return "\n".join(parts)
+
 def split_for_discord(text: str, limit: int = 2000) -> list[str]:
     text = (text or "").strip()
     if not text: return ["(empty response)"]
